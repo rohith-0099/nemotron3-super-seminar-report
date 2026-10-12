@@ -1,5 +1,7 @@
 # Beyond Pure Transformers — seminar report
 
+[![Build seminar report](https://github.com/rohith-0099/nemotron3-super-seminar-report/actions/workflows/build.yml/badge.svg)](https://github.com/rohith-0099/nemotron3-super-seminar-report/actions/workflows/build.yml)
+
 B.Tech seminar report (KTU format) on hybrid Mamba-Transformer architectures in
 NVIDIA's Nemotron 3 Super ([arXiv:2604.12374](https://arxiv.org/abs/2604.12374)).
 

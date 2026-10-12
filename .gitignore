@@ -1,0 +1,17 @@
+# arXiv source bundles (re-create with scripts/fetch_figures.sh)
+refs/
+
+# LaTeX build products
+report/*.aux
+report/chapters/*.aux
+report/*.bbl
+report/*.blg
+report/*.fdb_latexmk
+report/*.fls
+report/*.log
+report/*.lof
+report/*.lot
+report/*.out
+report/*.toc
+report/*.synctex.gz
+report/main.pdf

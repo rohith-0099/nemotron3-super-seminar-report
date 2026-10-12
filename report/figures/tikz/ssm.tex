@@ -1,0 +1,21 @@
+% Unrolled state-space recurrence  h_t = A_t h_{t-1} + B_t x_t,  y_t = C_t^T h_t
+\begin{tikzpicture}[
+  font=\small, >={Stealth},
+  state/.style={circle, draw=green!40!black, fill=green!18, minimum size=1.05cm, inner sep=0pt},
+  io/.style={rectangle, rounded corners=2pt, draw=gray!70, fill=gray!10, minimum width=0.9cm, minimum height=0.6cm}]
+\node[state] (h0) at (0,0)   {$h_{t-1}$};
+\node[state] (h1) at (3.4,0) {$h_{t}$};
+\node[state] (h2) at (6.8,0) {$h_{t+1}$};
+\node (l) at (-2.0,0) {$\cdots$};
+\node (r) at (8.8,0)  {$\cdots$};
+\foreach \k/\x/\lab in {0/0/{t-1}, 1/3.4/{t}, 2/6.8/{t+1}}{
+  \node[io] (x\k) at (\x,-1.9) {$x_{\lab}$};
+  \node[io] (y\k) at (\x,1.9)  {$y_{\lab}$};
+  \draw[->] (x\k) -- node[right, font=\footnotesize] {$B_{\lab}$} (h\k);
+  \draw[->] (h\k) -- node[right, font=\footnotesize] {$C_{\lab}$} (y\k);
+}
+\draw[->] (l) -- (h0);
+\draw[->] (h0) -- node[above, font=\footnotesize] {$A_{t}$} (h1);
+\draw[->] (h1) -- node[above, font=\footnotesize] {$A_{t+1}$} (h2);
+\draw[->] (h2) -- (r);
+\end{tikzpicture}

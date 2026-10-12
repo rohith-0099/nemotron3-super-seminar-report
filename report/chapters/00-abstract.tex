@@ -1,0 +1,39 @@
+\chapter*{Abstract}
+\addcontentsline{toc}{chapter}{Abstract}
+
+Since 2017, the Transformer architecture has been the standard foundation for
+large language models. However, its self-attention mechanism compares every
+token with every other token and must keep a key--value cache that grows with
+the input, so it becomes computationally expensive and memory-hungry as the
+context length increases. This seminar studies Nemotron~3 Super, an open
+language model released by NVIDIA in April 2026, which replaces most attention
+layers with Mamba-2 state-space layers, keeps a small number of attention
+layers as global ``anchors'', and scales its capacity with a Mixture-of-Experts
+(MoE) design. The model has 120~billion parameters in total, of which only
+about 12~billion are active for each token, and it supports context windows of
+up to one million tokens.
+
+The report first explains why pure Transformers struggle on long inputs and how
+selective state-space models such as Mamba and Mamba-2 keep a constant-size
+state instead. It then describes the three architectural ideas that distinguish
+Nemotron~3 Super: the interleaved hybrid Mamba--attention layout of its 88
+layers, LatentMoE, which runs 512 experts in a compressed 1024-dimensional
+latent space, and shared-weight Multi-Token Prediction heads that enable native
+speculative decoding. The training pipeline is examined next, covering 4-bit
+NVFP4 pretraining on 25~trillion tokens, long-context extension, supervised
+fine-tuning and multi-environment reinforcement learning, followed by
+post-training quantization and the stochastic-rounding fix required for the
+Mamba state cache.
+
+On published benchmarks the model reaches accuracy comparable to
+GPT-OSS-120B and Qwen3.5-122B while delivering up to 2.2$\times$ and
+7.5$\times$ higher inference throughput than these two models respectively, and
+it retains a RULER score of 91.6 at a one-million-token context. The report
+closes with the applications, advantages and limitations of the design and
+argues that hybrid architectures are a significant step beyond
+Transformer-only models for efficient, large-scale AI systems.
+
+\vspace{0.6cm}
+\noindent\textbf{Keywords:} large language models, state-space models, Mamba-2,
+hybrid architecture, Mixture-of-Experts, LatentMoE, multi-token prediction,
+NVFP4, quantization, long-context inference.

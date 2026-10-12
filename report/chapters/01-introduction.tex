@@ -1,0 +1,100 @@
+\chapter{Introduction}
+\label{ch:intro}
+
+\section{Background}
+
+Almost every large language model (LLM) in use today is built on the
+Transformer architecture introduced by Vaswani et al.\ in
+2017~\cite{vaswani2017attention}. Its central operation, self-attention, lets
+every token in the input look directly at every other token, which gives the
+model an exceptionally flexible way of routing information across a sequence.
+That flexibility has a price. The amount of computation in an attention layer
+grows quadratically with the length of the input, and during text generation
+the model must keep the keys and values of all previous tokens in a
+\emph{key--value (KV) cache} whose size grows with every token that is added.
+For a chat message of a few hundred tokens this cost is negligible. For the
+workloads that are now becoming common---an AI agent that reads an entire code
+repository, works through a long tool-calling session, or analyses a
+several-hundred-page document---it becomes the dominant cost of running the
+model.
+
+Two independent lines of research have attacked this cost from different
+directions. The first is the \emph{state-space model} (SSM). Mamba~\cite{gu2023mamba}
+and its successor Mamba-2~\cite{dao2024mamba2} read a sequence one token at a
+time and summarise everything seen so far in a state of fixed size, so that
+time grows only linearly with the sequence length and the memory needed during
+generation does not grow at all. The second is the \emph{Mixture-of-Experts}
+(MoE) layer~\cite{shazeer2017moe,lepikhin2020gshard}, which splits the
+feed-forward part of a model into many small ``experts'' and activates only a
+handful of them for each token, so that a model can hold a very large number of
+parameters while spending the computation of a much smaller one.
+
+\NS, released by NVIDIA in April 2026~\cite{nvidia2026super}, combines both
+ideas in a single open model. It has 120.6~billion parameters in total, of
+which only 12.7~billion are active in any forward pass. Most of its 88 layers
+are Mamba-2 and MoE layers; only eight are self-attention layers. The model
+accepts contexts of up to one million tokens and, according to its technical
+report, achieves accuracy comparable to GPT-OSS-120B~\cite{openai2025gptoss}
+and Qwen3.5-122B while delivering up to 2.2$\times$ and 7.5$\times$ higher
+inference throughput than those models respectively.
+
+\section{Motivation}
+
+The motivation for studying this model is that it is the clearest example so
+far of a production-scale LLM that is \emph{not} a pure Transformer. Earlier
+hybrid models were either small or research prototypes. \NS\ shows that the
+hybrid approach scales to more than one hundred billion parameters and to
+million-token contexts while remaining competitive with the strongest open
+Transformer models of the same size. Understanding how it works therefore
+answers a broader question: is the attention-only design that has dominated
+since 2017 still the best foundation for large models, or is the field moving
+towards mixed architectures in which attention is used sparingly?
+
+A second motivation is that the model is fully open. Its weights, a large part
+of its training data and its training recipe are published, and the technical
+report describes the engineering in unusual detail---including problems that
+appeared along the way, such as the numerical drift caused by quantizing the
+Mamba state. This makes it possible to study not only the architecture but
+also what it takes to train and deploy it.
+
+\section{Objectives of the Seminar}
+
+The objectives of this seminar are:
+\begin{itemize}
+  \item to understand why Transformers become slow and memory-heavy on long
+        inputs;
+  \item to explore state-space models, in particular Mamba and Mamba-2, which
+        were proposed to solve that problem;
+  \item to study how \NS\ interleaves Mamba-2 and attention layers to form a
+        hybrid model;
+  \item to examine how Mixture-of-Experts, and specifically LatentMoE, lets the
+        model stay large while running cheaply;
+  \item to review how the model is trained, quantized and evaluated; and
+  \item to highlight what this design suggests about the future of efficient
+        large-scale AI.
+\end{itemize}
+
+\section{Scope}
+
+The report is a study of published work. Its primary source is the \NS\
+technical report~\cite{nvidia2026super}; the supporting papers on Mamba,
+Mamba-2, LatentMoE, multi-token prediction and NVFP4 training are used to
+explain the building blocks in more depth. All benchmark numbers quoted in this
+report are those published by the respective authors; no new experiments were
+run. Where the report contains estimates worked out by the author from
+published configuration values, this is stated explicitly.
+
+\section{Organisation of the Report}
+
+Chapter~\ref{ch:survey} surveys the literature that leads up to \NS.
+Chapter~\ref{ch:background} gives the technical background on Transformers and
+the KV cache, state-space models, and Mixture-of-Experts.
+Chapter~\ref{ch:arch} describes the architecture of \NS: the hybrid layout,
+LatentMoE and multi-token prediction. Chapter~\ref{ch:training} covers
+pretraining in the 4-bit NVFP4 format, the training data, long-context
+extension, supervised fine-tuning and reinforcement learning.
+Chapter~\ref{ch:quant} explains how the model is quantized for deployment and
+how the Mamba state is handled. Chapter~\ref{ch:results} presents the results,
+Chapter~\ref{ch:apps} the applications, and
+Chapter~\ref{ch:adv} the advantages and limitations.
+Chapter~\ref{ch:conclusion} concludes the report and outlines future scope.

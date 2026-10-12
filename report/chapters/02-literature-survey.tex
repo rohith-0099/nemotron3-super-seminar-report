@@ -1,0 +1,234 @@
+\chapter{Literature Survey}
+\label{ch:survey}
+
+\NS\ does not introduce a single new idea so much as bring several existing
+ones together at a larger scale than before. This chapter traces those ideas
+through the literature in roughly chronological order and identifies the gap
+that each work left open.
+
+\section{Transformers and Their Cost}
+
+Vaswani et al.~\cite{vaswani2017attention} proposed the Transformer, a network
+built solely on attention, without recurrence or convolution. Because attention
+relates all pairs of positions in one step, the model is highly parallel during
+training and captures long-range dependencies well. The same property makes its
+cost quadratic in the sequence length. Later engineering reduced the constant
+factors without removing the scaling: Grouped-Query Attention
+(GQA)~\cite{ainslie2023gqa}, for instance, lets several query heads share one
+key--value head, which shrinks the KV cache considerably while keeping quality
+close to that of full multi-head attention. \NS\ still uses GQA in the few
+attention layers it retains.
+
+\section{State-Space Models: S4, Mamba and Mamba-2}
+
+Gu et al.~\cite{gu2021s4} showed with the Structured State Space sequence
+model (S4) that a linear state-space system, discretised and suitably
+parameterised, can model sequences tens of thousands of steps long. S4's
+dynamics, however, were the same for every input, which limited it on
+information-dense data such as text.
+
+Mamba~\cite{gu2023mamba} removed this limitation by making the state-space
+parameters \emph{functions of the input}. This ``selection mechanism'' lets the
+model decide, token by token, what to write into its state and what to ignore
+(Figure~\ref{fig:mamba-selective}). Its authors report Mamba as the first linear-time model to
+match Transformers of similar size on language modelling.
+
+\begin{figure}[htbp]
+  \centering
+  \includegraphics[width=\linewidth]{mamba-fig01-selective-ssm.pdf}
+  \caption[Selective state-space model with input-dependent parameters]{Selective
+  state-space model: each channel of the input $x$ is mapped to the output $y$
+  through a latent state $h$, and a selection mechanism makes the SSM
+  parameters depend on the input. \source{Gu and Dao (2023)~\cite{gu2023mamba}, Fig.~1}}
+  \label{fig:mamba-selective}
+\end{figure}
+
+Dao and Gu~\cite{dao2024mamba2} then developed the \emph{structured state space
+duality} (SSD) framework, showing that SSMs and certain forms of attention are
+two views of the same class of structured matrices. The resulting Mamba-2 layer
+is a refinement of Mamba's selective SSM whose core computation is 2--8$\times$
+faster than Mamba's, while remaining competitive with Transformers on language
+modelling. Its remaining weakness is inherent to the approach: the state is a
+compressed summary, so exact details from far back in the sequence can fade.
+
+\section{Hybrid Mamba--Transformer Models}
+
+If Mamba is efficient but forgetful and attention is precise but expensive, the
+natural next step is to mix them. Jamba~\cite{lieber2024jamba} from AI21 Labs
+was the first large model to do so, interleaving blocks of Transformer and
+Mamba layers and adding MoE to some of them (Figure~\ref{fig:jamba}). It showed
+strong results for contexts of up to 256K tokens while fitting on a single
+80\,GB GPU, and is the closest outside comparison to the Nemotron design.
+
+\begin{figure}[htbp]
+  \centering
+  \includegraphics[width=0.62\linewidth]{jamba-fig01-block.pdf}
+  \caption[A Jamba block mixing attention, Mamba and MoE layers]{(a) A single
+  Jamba block and (b) the layer types inside it: attention or Mamba followed by
+  an MLP or MoE module. \source{Lieber et al.\ (2024)~\cite{lieber2024jamba}, Fig.~1}}
+  \label{fig:jamba}
+\end{figure}
+
+Waleffe et al.~\cite{waleffe2024empirical} at NVIDIA carried out the controlled
+comparison that the field had been missing. They trained 8-billion-parameter
+Mamba, Mamba-2 and Transformer models on the same data (up to 3.5 trillion
+tokens) and found that pure SSMs match or exceed Transformers on many tasks but
+lag on tasks that need strong copying or in-context learning, such as five-shot
+MMLU and a ``Phonebook'' lookup task. A hybrid made of 43\% Mamba-2, 7\%
+attention and 50\% MLP layers closed that gap: it exceeded the Transformer on
+all twelve standard tasks evaluated (by 2.65 points on average) and was
+predicted to be up to 8$\times$ faster when generating tokens. Their ablation
+on the proportion of attention layers (Figure~\ref{fig:attn-ratio}) found that
+validation loss is lowest when only about 8\% of the layers are attention
+layers. This is the core idea behind this seminar: \emph{a few attention layers
+are enough}.
+
+\begin{figure}[htbp]
+  \centering
+  \begin{subfigure}[b]{0.47\linewidth}
+    \centering
+    \includegraphics[width=\linewidth]{empirical-fig04-attention-ratio.pdf}
+    \caption{Validation loss against the percentage of attention layers
+    (130M-parameter hybrids, 24 layers).}
+  \end{subfigure}\hfill
+  \begin{subfigure}[b]{0.49\linewidth}
+    \centering
+    \includegraphics[width=\linewidth]{empirical-fig06-mmlu.pdf}
+    \caption{Five-shot MMLU accuracy of 8B-parameter models during training on
+    3.5T tokens.}
+  \end{subfigure}
+  \caption[How much attention a hybrid model needs]{How much attention a hybrid
+  needs, and what it buys. \source{Waleffe et al.\
+  (2024)~\cite{waleffe2024empirical}, Figs.~4 and~6}}
+  \label{fig:attn-ratio}
+\end{figure}
+
+\section{The Nemotron Lineage}
+
+NVIDIA turned this finding into a product line.
+\emph{Nemotron-H}~\cite{nvidia2025nemotronh} was a family of 8B and 56B/47B
+hybrid models in which roughly 8\% of the layers are self-attention layers,
+evenly dispersed, and the rest alternate between Mamba-2 and feed-forward
+layers (Figure~\ref{fig:nemotronh}). These models matched or exceeded
+similarly sized Transformers such as Qwen-2.5 and Llama-3.1 while being up to
+3$\times$ faster at inference. The paper also introduced an FP8 training
+recipe, a first step towards the low-precision training used later.
+
+\begin{figure}[htbp]
+  \centering
+  \includegraphics[width=0.9\linewidth]{nemotronh-fig02-layer-pattern.pdf}\\[6pt]
+  \includegraphics[width=0.95\linewidth]{nemotronh-fig01-throughput.pdf}
+  \caption[Nemotron-H layer pattern and accuracy versus throughput]{Top:
+  Nemotron-H-8B/56B layer patterns, with attention layers evenly dispersed
+  among alternating Mamba-2 and FFN layers. Bottom: MMLU-Pro accuracy against
+  per-GPU inference throughput for the larger models. \source{NVIDIA
+  (2025)~\cite{nvidia2025nemotronh}, Figs.~2 and~1}}
+  \label{fig:nemotronh}
+\end{figure}
+
+\emph{Nemotron Nano~2}~\cite{nvidia2025nano2} applied the Nemotron-H
+architecture to a reasoning model. A 12B base model was pretrained on 20
+trillion tokens with the FP8 recipe and then compressed to 9B parameters; it
+reached up to 6$\times$ higher throughput than Qwen3-8B in reasoning settings
+with long generated ``thinking'' traces, exactly where constant-memory
+generation pays off.
+
+The \emph{Nemotron~3} white paper~\cite{nvidia2025nemotron3} then announced a
+family of three models---Nano, Super and Ultra---that add Mixture-of-Experts to
+the hybrid backbone and support contexts of up to one million tokens.
+\emph{\NN}~\cite{nvidia2025nano3}, the first to be released, has 31.6B
+parameters of which 3.2B are active; its MoE layers activate 6 of 128 experts.
+It achieved up to 3.3$\times$ higher throughput than GPT-OSS-20B and
+Qwen3-30B-A3B while being more accurate on popular benchmarks
+(Figure~\ref{fig:nano3}). Nano, however, used a standard MoE and was trained in
+ordinary BF16 precision.
+
+\begin{figure}[htbp]
+  \centering
+  \includegraphics[width=0.86\linewidth]{nano3-fig02-layer-pattern.pdf}\\[6pt]
+  \includegraphics[width=\linewidth]{nano3-fig01-accuracy-throughput.pdf}
+  \caption[Nemotron 3 Nano layer pattern and accuracy/throughput comparison]{Top:
+  \NN\ layer pattern, the direct predecessor of the Super layout. Bottom: its
+  accuracy and throughput against Qwen3-30B-A3B and GPT-OSS-20B.
+  \source{NVIDIA (2025)~\cite{nvidia2025nano3}, Figs.~2 and~1}}
+  \label{fig:nano3}
+\end{figure}
+
+\section{Supporting Techniques}
+
+Three further works supply the remaining ingredients of \NS.
+
+\textbf{Mixture-of-Experts.} Shazeer et al.~\cite{shazeer2017moe} introduced
+the sparsely-gated MoE layer, and GShard~\cite{lepikhin2020gshard} scaled it to
+very large Transformers with automatic sharding and a load-balancing loss.
+DeepSeek-V3~\cite{deepseek2024v3} popularised fine-grained experts with shared
+experts and auxiliary-loss-free load balancing in an open model.
+LatentMoE~\cite{elango2026latentmoe} revisits the design from a
+hardware--software co-design perspective and moves the experts into a
+lower-dimensional latent space; it is the MoE variant adopted in \NS.
+
+\textbf{Multi-token prediction.} Gloeckle et al.~\cite{gloeckle2024mtp}
+showed that training a model to predict several future tokens at once, using
+extra output heads on a shared trunk, improves sample efficiency and enables
+faster inference (Figure~\ref{fig:mtp-meta}). Speculative
+decoding~\cite{leviathan2022speculative,chen2023speculative} is the inference
+technique that turns such cheap extra predictions into real speed-ups without
+changing the output distribution.
+
+\begin{figure}[htbp]
+  \centering
+  \includegraphics[width=0.6\linewidth]{mtp-fig01-overview.png}
+  \caption[Multi-token prediction with several output heads on a shared trunk]{Multi-token
+  prediction: several output heads on top of a shared trunk predict the next
+  $n$ tokens. \source{Gloeckle et al.\ (2024)~\cite{gloeckle2024mtp}, Fig.~1}}
+  \label{fig:mtp-meta}
+\end{figure}
+
+\textbf{Low-precision training.} NVIDIA's NVFP4
+paper~\cite{nvidia2025nvfp4} demonstrated stable pretraining of a 12B model in
+a 4-bit floating-point format over 10 trillion tokens, with a loss that tracks
+an FP8 baseline closely. \NS\ is the first Nemotron~3 model to use this recipe
+for its full pretraining run.
+
+\section{Summary of the Survey}
+
+Table~\ref{tab:survey} summarises the works most directly related to this
+seminar together with the limitation or research gap that each leaves open.
+
+\begin{table}[htbp]
+\centering
+\small
+\caption{Summary of the literature survey}
+\label{tab:survey}
+\begin{tabularx}{\linewidth}{@{}P{3.0cm}LL@{}}
+\toprule
+\textbf{Study} & \textbf{Main contribution} & \textbf{Limitation / research gap} \\
+\midrule
+Vaswani et al.\ (2017) \cite{vaswani2017attention} &
+Transformer built purely on self-attention. &
+Quadratic compute and a KV cache that grows with context length. \\
+Gu and Dao (2023) \cite{gu2023mamba} &
+Mamba: selective SSM with linear-time sequence modelling. &
+Fixed-size state; evaluated at small to medium scale. \\
+Dao and Gu (2024) \cite{dao2024mamba2} &
+Mamba-2 and the SSD framework; core layer 2--8$\times$ faster than Mamba. &
+State is only a summary, so exact details from far back can be lost. \\
+Lieber et al.\ (2024) \cite{lieber2024jamba} &
+Jamba: first large hybrid Transformer--Mamba--MoE model, up to 256K context. &
+Attention-to-Mamba ratio chosen for one configuration; standard MoE. \\
+Waleffe et al.\ (2024) \cite{waleffe2024empirical} &
+Controlled 8B study: a hybrid with about 7--8\% attention beats a Transformer. &
+Dense models only; no MoE and no agentic post-training. \\
+NVIDIA (2025) \cite{nvidia2025nano3} &
+\NN: hybrid plus MoE at 30B; 3.3$\times$ higher throughput. &
+Shown at a small scale, with ordinary MoE and BF16 precision. \\
+Elango et al.\ (2026) \cite{elango2026latentmoe} &
+LatentMoE: experts in a compressed latent space, better accuracy per FLOP and per parameter. &
+Architecture study; not yet a full post-trained model. \\
+NVIDIA (2026) \cite{nvidia2026super} &
+\NS: the same design scaled to 120B with LatentMoE, MTP and NVFP4; 1M context at
+2.2$\times$ the throughput of GPT-OSS-120B. &
+Needs large memory; trails Qwen3.5-122B on several reasoning and agentic benchmarks. \\
+\bottomrule
+\end{tabularx}
+\end{table}

@@ -1,0 +1,68 @@
+\chapter{Conclusion and Future Scope}
+\label{ch:conclusion}
+
+\section{Conclusion}
+
+Pure Transformers become slow and memory-heavy on long inputs because
+self-attention compares every pair of tokens and keeps a KV cache that grows
+with the context. State-space models such as Mamba-2 avoid both costs by
+carrying a constant-size state, but that state is a lossy summary. This
+seminar studied \NS, a model that combines the two: 40 Mamba-2 blocks carry
+most of the sequence processing, 8 attention layers act as global anchors for
+exact long-range retrieval, and 40 LatentMoE layers provide capacity.
+
+Three further ideas complete the design. LatentMoE moves the experts into a
+1024-dimensional latent space, which cuts memory and routing traffic fourfold
+and pays for more experts, so that 120 billion parameters exist while only
+about 12 billion are active for each token. Shared-weight multi-token
+prediction heads give the model its own draft mechanism for speculative
+decoding. Pretraining in 4-bit NVFP4 shows that low-precision training is
+stable even over 25 trillion tokens.
+
+The published results show a model in the same accuracy class as the best
+open Transformer models of its size---ahead of GPT-OSS-120B on most tasks and
+somewhat behind Qwen3.5-122B---while running up to 2.2$\times$ and
+7.5$\times$ faster than them and holding a RULER score of 91.6 at one million
+tokens. The study also showed that the hybrid approach is not free: it brings
+new engineering problems, of which the accumulation of rounding error in the
+Mamba state is the clearest example.
+
+The broader lesson is that attention does not have to be everywhere. Used
+sparingly and placed carefully, a handful of attention layers appear to be
+enough, and the rest of the network can be built from cheaper components.
+\NS\ is strong evidence that the next generation of efficient large-scale
+models will be hybrids designed together with the hardware they run on, rather
+than pure Transformers.
+
+\section{Future Scope}
+
+Several directions follow from this study.
+\begin{itemize}
+  \item \textbf{Larger hybrids.} The Nemotron~3 family includes a larger
+        \emph{Ultra} model~\cite{nvidia2025nemotron3}; it will show whether the
+        same layout continues to scale.
+  \item \textbf{Placement and number of attention layers.} The ratio of about
+        8--9\% attention comes from experiments on small models. A systematic
+        study at large scale, or a learned placement, could improve the
+        trade-off further.
+  \item \textbf{Quantization-robust state-space layers.} The Mamba state
+        currently needs a training-free fix at deployment. Training methods
+        that make the recurrence itself robust to low-precision storage would
+        remove a source of fragility and might allow the state to be stored in
+        fewer bits.
+  \item \textbf{Lower-precision training everywhere.} Several layer types are
+        still trained in BF16. Extending 4-bit training to them, and
+        understanding the growth of zero-valued gradients, would reduce
+        training cost further.
+  \item \textbf{Independent benchmarking.} Reproducing the throughput results
+        on other accelerators and serving stacks would clarify how much of the
+        advantage is architectural and how much is specific to one hardware
+        platform.
+  \item \textbf{Other modalities.} Linear-time sequence layers are attractive
+        wherever sequences are very long, such as audio, video and genomic
+        data; hybrid backbones could be extended to multimodal models.
+  \item \textbf{Smaller footprints.} Techniques for loading experts on demand
+        or pruning rarely used experts could reduce the memory needed to hold
+        all 120 billion parameters and bring such models to smaller
+        deployments.
+\end{itemize}

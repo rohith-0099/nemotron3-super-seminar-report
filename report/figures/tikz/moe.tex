@@ -1,0 +1,28 @@
+% Mixture-of-Experts layer: router scores all experts, only the top-k run
+\begin{tikzpicture}[
+  font=\small, >={Stealth},
+  box/.style={rectangle, rounded corners=3pt, draw=gray!70!black, minimum height=0.75cm},
+  on/.style={box, fill=orange!35, minimum width=0.95cm},
+  off/.style={box, fill=gray!12, text=gray!70, draw=gray!45, minimum width=0.95cm}]
+\node[box, fill=blue!12, minimum width=1.5cm] (x) at (0,0) {token $x$};
+\node[box, fill=blue!22, minimum width=1.9cm, align=center] (r) at (0,-1.6) {Router $g(x)$};
+\node[off] (e1) at (-4.2,-3.6) {$E_1$};
+\node[on]  (e2) at (-3.0,-3.6) {$E_2$};
+\node[off] (e3) at (-1.8,-3.6) {$E_3$};
+\node[off] (e4) at (-0.6,-3.6) {$E_4$};
+\node[on]  (e5) at (0.6,-3.6)  {$E_5$};
+\node[off] (e6) at (1.8,-3.6)  {$E_6$};
+\node (dots) at (2.8,-3.6) {$\cdots$};
+\node[on]  (en) at (3.9,-3.6)  {$E_N$};
+\node[circle, draw=gray!70!black, fill=white, inner sep=1.5pt] (s) at (0,-5.4) {$\sum$};
+\node[box, fill=blue!12, minimum width=1.5cm] (y) at (0,-6.7) {output $y$};
+\draw[->] (x) -- (r);
+\foreach \e/\w in {e2/g_2, e5/g_5, en/g_N}{
+  \draw[->, thick, orange!70!black] (r.south) -- (\e.north);
+  \draw[->, thick, orange!70!black] (\e.south) -- node[pos=0.45, fill=white, inner sep=1pt, font=\footnotesize] {$\w$} (s);
+}
+\foreach \e in {e1,e3,e4,e6}{ \draw[->, gray!45, densely dashed] (r.south) -- (\e.north); }
+\draw[->] (s) -- (y);
+\node[font=\footnotesize, align=left, anchor=west] at (4.7,-1.6) {scores all $N$ experts,\\keeps the top-$k$};
+\node[font=\footnotesize, align=left, anchor=west] at (4.7,-3.6) {only $k$ experts run;\\the rest stay idle};
+\end{tikzpicture}

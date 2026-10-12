@@ -1,0 +1,24 @@
+% RULER long-context accuracy, plotted from Table 5 of the Nemotron 3 Super report
+\begin{tikzpicture}
+\begin{axis}[
+  width=0.8\linewidth, height=6.4cm,
+  symbolic x coords={256k,512k,1M}, xtick=data,
+  xlabel={Context length (tokens)}, ylabel={RULER score},
+  ymin=0, ymax=110, enlarge x limits=0.18,
+  grid=major, grid style={gray!25},
+  legend style={font=\small, at={(0.03,0.05)}, anchor=south west, draw=gray!60},
+  legend cell align=left,
+  tick label style={font=\small}, label style={font=\small},
+  ]
+\addplot[very thick, mark=*, green!45!black]
+  coordinates {(256k,96.83) (512k,95.22) (1M,91.64)};
+\addlegendentry{Nemotron 3 Super}
+\addplot[very thick, mark=square*, blue!70!black, dashed]
+  coordinates {(256k,96.74) (512k,95.95) (1M,91.33)};
+\addlegendentry{Qwen3.5-122B-A10B}
+\addplot[very thick, mark=triangle*, gray!70!black,
+  nodes near coords, nodes near coords style={font=\scriptsize, anchor=south west}]
+  coordinates {(256k,52.30) (512k,46.70) (1M,22.30)};
+\addlegendentry{GPT-OSS-120B}
+\end{axis}
+\end{tikzpicture}

@@ -1,0 +1,260 @@
+\chapter{Quantization and Deployment}
+\label{ch:quant}
+
+After training, the model is compressed so that it runs faster and uses less
+memory. NVIDIA applies \emph{post-training quantization} (PTQ) to the weights
+and activations of the post-trained BF16 model and releases two deployment
+checkpoints: an FP8 checkpoint (8-bit weights and activations) for
+Hopper-generation GPUs, and an NVFP4 checkpoint (4-bit weights and
+activations) for the newer Blackwell GPUs~\cite{nvidia2026super}.
+
+\section{FP8 Checkpoint}
+
+The FP8 checkpoint was calibrated on 256 samples of 65{,}536 tokens each,
+drawn from the SFT data. Quantization is applied to the MoE matrix
+multiplications (both routed and shared experts) and to the Mamba linear
+layers, where most of the computation is. The KV cache is kept in FP8, and the
+Mamba state cache is stored in FP16 rather than FP32 for speed.
+Table~\ref{tab:precision-fp8} lists the assignments.
+
+\begin{table}[htbp]
+\centering
+\small
+\caption[Precision settings of the FP8 checkpoint]{Precision settings of the
+FP8 checkpoint and of the BF16 baseline (from~\cite{nvidia2026super},
+Table~6)}
+\label{tab:precision-fp8}
+\begin{tabular}{@{}lcc@{}}
+\toprule
+\textbf{Component} & \textbf{FP8 checkpoint} & \textbf{BF16 baseline} \\
+\midrule
+Embedding & BF16 & BF16 \\
+Attention projections (QKV and output) & BF16 & BF16 \\
+KV cache and first attention product & FP8 & FP8 \\
+Second attention product & BF16 & BF16 \\
+\midrule
+MoE experts (routed and shared) & FP8 & BF16 \\
+MoE latent projections & BF16 & BF16 \\
+Router & FP32 & FP32 \\
+\midrule
+Mamba linear layers & FP8 & BF16 \\
+Mamba SSM cache & FP16 & FP32 \\
+Mamba 1-D convolution & BF16 & BF16 \\
+\midrule
+Output layers & BF16 & BF16 \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\section{NVFP4 Checkpoint}
+
+FP4 is a more aggressive format than FP8. It is particularly attractive for
+prefill-heavy workloads such as coding agents, in which very long inputs are
+processed and the linear and MoE matrix multiplications dominate the running
+time. NVFP4 for inference uses the same element format as in training: signed
+E2M1 values with a scale per block of 16, the block scales being stored in FP8
+with a per-tensor FP32 factor.
+
+Naive 4-bit quantization costs accuracy. The final recipe combines three
+measures:
+\begin{enumerate}
+  \item \textbf{MSE-calibrated weight scales.} In the default recipe each
+        block scale is set from the largest absolute value in the block.
+        Because weights are quantized once, offline, an expensive search can
+        be afforded instead, choosing the scale that minimises the mean squared
+        error of the block.
+  \item \textbf{Max-based activation scales.} Activations must be quantized at
+        run time, where a search is impractical, so they keep the simple
+        max-based scaling.
+  \item \textbf{AutoQuantize.} Sensitive layers are selectively promoted from
+        FP4 to FP8 or BF16.
+\end{enumerate}
+
+\emph{AutoQuantize}, part of NVIDIA's Model-Optimizer toolkit, selects the
+best precision for each layer automatically. It estimates how sensitive each
+operation is to quantization, using a second-order approximation of the change
+in loss, models the performance cost of each candidate precision, and then
+solves a knapsack-style optimisation for the assignment that loses the least
+accuracy within a given budget. For \NS\ the candidates were NVFP4, FP8 and
+BF16 with an effective budget of 4.75 bits. The outcome
+(Table~\ref{tab:precision-fp4}) is a model that is mostly FP4: the routed
+experts, which hold the great majority of the parameters, are NVFP4
+throughout, while the attention and Mamba projections were assigned FP8 or
+BF16.
+
+\begin{table}[htbp]
+\centering
+\small
+\caption[Precision settings of the NVFP4 checkpoint]{Precision settings of the
+NVFP4 checkpoint (from~\cite{nvidia2026super}, Table~7)}
+\label{tab:precision-fp4}
+\begin{tabular}{@{}lcc@{}}
+\toprule
+\textbf{Component} & \textbf{Searched?} & \textbf{NVFP4 checkpoint} \\
+\midrule
+Embedding & No & BF16 \\
+Attention QKV projection & Yes & BF16 \\
+Attention output projection & Yes & FP8 / BF16 \\
+KV cache and first attention product & No & FP8 \\
+\midrule
+Routed (sparse) experts & Yes & NVFP4 \\
+Shared expert & Yes & NVFP4 / FP8 / BF16 \\
+MoE latent projections & Yes & FP8 / BF16 \\
+Router & No & FP32 \\
+\midrule
+Mamba projections & Yes & FP8 / BF16 \\
+Mamba 1-D convolution & No & BF16 \\
+Mamba SSM cache & No & FP16 \\
+\midrule
+Output layers & No & BF16 \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+The whole mixed-precision PTQ process took less than two hours on a single
+node with eight B200 GPUs, using 512 calibration samples of 4096 tokens. The
+resulting model achieves a median of 99.8\% of the BF16 baseline's accuracy
+while keeping near-FP4 speed. Table~\ref{tab:quant-eval} compares the three
+checkpoints on a selection of benchmarks; the differences are small and go in
+both directions.
+
+\begin{table}[htbp]
+\centering
+\small
+\caption[Accuracy of the BF16, FP8 and NVFP4 checkpoints]{Accuracy of the
+BF16, FP8 and NVFP4 checkpoints on selected benchmarks
+(from~\cite{nvidia2026super}, Table~8)}
+\label{tab:quant-eval}
+\begin{tabular}{@{}lccc@{}}
+\toprule
+\textbf{Benchmark} & \textbf{BF16} & \textbf{FP8} & \textbf{NVFP4} \\
+\midrule
+MMLU-Pro & 83.73 & 83.63 & 83.33 \\
+HMMT Feb25 (with tools) & 94.73 & 94.38 & 95.36 \\
+GPQA (no tools) & 79.23 & 79.36 & 79.42 \\
+LiveCodeBench v5 & 81.19 & 80.99 & 80.56 \\
+SciCode (subtask) & 42.05 & 41.38 & 40.83 \\
+Terminal Bench (hard subset) & 25.78 & 26.04 & 24.48 \\
+SWE-Bench (OpenCode) & 60.47 & --- & 59.90 \\
+TauBench V2 (average) & 61.15 & 61.07 & 60.46 \\
+IFBench (prompt) & 72.58 & 72.32 & 73.30 \\
+AA-LCR & 58.31 & 57.69 & 58.06 \\
+RULER 512k & 95.22 & 95.15 & 95.21 \\
+RULER 1M & 91.64 & 91.43 & 91.60 \\
+MMLU-ProX (average) & 79.35 & 79.21 & 79.37 \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\section{Mamba State Quantization}
+
+\subsection{The Problem}
+
+The most instructive part of the deployment work concerns the Mamba state. In
+memory-bound settings, reading the Mamba state cache (the \emph{SSM cache})
+from memory becomes a major bottleneck for decoding speed. The cache is stored
+in FP32 by default. The obvious optimisation is to store it in FP16: fetch it
+in FP16, convert to FP32 for the recurrent update, and convert back to FP16
+for storage.
+
+On an early checkpoint this simple change had an unexpected effect. Accuracy
+on coding benchmarks hardly moved, but the model's answers became much
+longer: the number of generated tokens on LiveCodeBench rose by about 37\%
+with BF16 weights and by about 40\% with FP8 weights
+(Table~\ref{tab:ssm-cache}). A model that writes 40\% more tokens to reach the
+same answer has given back much of the speed that quantization was meant to
+provide.
+
+\begin{table}[htbp]
+\centering
+\small
+\caption[Effect of the SSM cache recipe on accuracy and verbosity]{Effect of
+the SSM cache recipe on LiveCodeBench accuracy and verbosity (selected rows
+from~\cite{nvidia2026super}, Table~9). W16A16 denotes BF16 weights and
+activations, W8A8 denotes FP8.}
+\label{tab:ssm-cache}
+\begin{tabular}{@{}llccc@{}}
+\toprule
+\textbf{Weights/act.} & \textbf{SSM cache recipe} & \textbf{Accuracy} &
+\textbf{Completion tokens} & \textbf{Verbosity change} \\
+\midrule
+W16A16 & FP32 (baseline) & 72.91 & 21{,}769 & 0.00\% \\
+W16A16 & FP16 & 73.24 & 29{,}812 & $+36.95\%$ \\
+W16A16 & FP16 + SR (Philox 5) & 72.00 & 21{,}392 & $-1.73\%$ \\
+\midrule
+W8A8 & FP16 & 73.13 & 30{,}536 & $+40.27\%$ \\
+W8A8 & INT16 + block scale (128) & 72.22 & 22{,}406 & $+2.90\%$ \\
+W8A8 & FP16 + SR (Philox 5) & 72.63 & 22{,}159 & $+1.79\%$ \\
+W8A8 & FP16 + SR (Philox 3) & 70.07 & 24{,}098 & $+10.70\%$ \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\subsection{Why the Error Accumulates}
+
+The cause lies in the recurrence itself. In an attention layer, a rounding
+error in one cache entry stays in that entry. In a Mamba layer the state is
+fed back into itself at every step, so an error made at one step is carried
+into all later steps. Let the exact update be $h_t = A_t h_{t-1} + B_t x_t$ and
+let storing the state at step $t$ add an error $e_t$, so that the quantized
+state follows $h_{q,t} = A_t h_{q,t-1} + B_t x_t + e_t$. Unrolling the
+recursion gives~\cite{nvidia2026super}
+\begin{equation}
+  h_{q,t} = h_t + \sum_{i=0}^{t} \left( \prod_{j=i+1}^{t} A_j \right) e_i .
+  \label{eq:error-accum}
+\end{equation}
+Every past error $e_i$ is still present at step $t$, scaled by the product of
+the transitions since. Over the tens of thousands of steps in a long
+generation, small errors can add up to a visible change in behaviour.
+
+Fixing this through training is not straightforward. Mamba-2 is trained with
+the chunked SSD algorithm (Section~\ref{sec:mamba2}), which never
+materialises the step-by-step recurrence or the inference-time cache, so
+simulating cache quantization during training would add substantial overhead.
+The team therefore looked for training-free fixes.
+
+\subsection{Two Fixes}
+
+\textbf{More mantissa bits.} Storing the cache as 16-bit integers gives more
+precision than FP16 for values of similar size. Plain INT16 did not help,
+because the state has a wide dynamic range, but adding an FP32 scale per block
+of 128 values along the state dimension removed the verbosity problem.
+
+\textbf{Stochastic rounding.} The second hypothesis was that the trouble comes
+from \emph{how} values are rounded. The standard rule, round-to-nearest with
+ties to even (RTNE), always maps the same input to the same output. Its error
+is therefore a systematic \emph{bias}, and in a recurrence a bias accumulates
+coherently, pushing the state steadily in one direction. Stochastic rounding
+(SR) instead rounds a value $x$ lying between two representable neighbours
+$x_{\downarrow} \le x \le x_{\uparrow}$ at random, with probabilities
+proportional to how close each neighbour is:
+\begin{equation}
+  \operatorname{SR}(x) =
+  \begin{cases}
+    x_{\uparrow}   & \text{with probability } p = \dfrac{x - x_{\downarrow}}{x_{\uparrow} - x_{\downarrow}},\\[8pt]
+    x_{\downarrow} & \text{with probability } 1 - p ,
+  \end{cases}
+  \qquad \mathbb{E}\bigl[\operatorname{SR}(x)\bigr] = x .
+  \label{eq:sr}
+\end{equation}
+Each individual rounding is noisier, but the error has zero mean, so the
+errors in Eq.~\eqref{eq:error-accum} tend to cancel instead of adding up: the
+systematic drift is replaced by zero-mean noise. Applying stochastic rounding
+before the cast to FP16 fixed the verbosity problem for both the BF16 and the
+FP8 models.
+
+\subsection{The Chosen Recipe}
+
+Both fixes restored accuracy and verbosity to the FP32 baseline. \NS\ uses
+FP16 with stochastic rounding, for three reasons given in the report: it needs
+no block scale factors to be computed, stored and loaded; Blackwell GPUs
+provide a dedicated instruction for stochastic rounding during type
+conversion; and they support the Philox pseudo-random generator natively. The
+number of Philox rounds trades randomness quality against overhead. Five
+rounds kept accuracy and verbosity at baseline, while three rounds were too
+few (verbosity $+10.7\%$), so Philox with five rounds was selected.
+
+This episode is a good illustration of a general point about hybrid models: a
+state-space layer is not simply a cheaper attention layer. Its recurrent
+nature creates failure modes that Transformers do not have, and the
+deployment stack has to be adapted accordingly.

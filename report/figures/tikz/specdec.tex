@@ -1,0 +1,17 @@
+% Speculative decoding loop with MTP heads as the built-in draft model
+\begin{tikzpicture}[
+  font=\small, >={Stealth},
+  stp/.style={rectangle, rounded corners=3pt, draw=gray!70!black, fill=blue!10,
+              minimum height=1.35cm, text width=4.6cm, align=center}]
+\node[stp] (ctx) at (0,0) {\textbf{1.} Current context\\$x_1,\dots,x_t$};
+\node[stp, fill=green!18] (draft) at (7.2,0)
+  {\textbf{2.} MTP head drafts $D$ tokens\\$\hat{x}_{t+1},\dots,\hat{x}_{t+D}$};
+\node[stp, fill=orange!20] (verify) at (7.2,-2.6)
+  {\textbf{3.} Main model verifies all $D$ drafts in \emph{one} forward pass};
+\node[stp, fill=green!18] (keep) at (0,-2.6)
+  {\textbf{4.} Keep the matching prefix ($a \le D$ tokens) plus the main model's own next token};
+\draw[->, thick] (ctx) -- (draft);
+\draw[->, thick] (draft) -- (verify);
+\draw[->, thick] (verify) -- (keep);
+\draw[->, thick] (keep) -- node[right, font=\footnotesize, align=left] {append $a+1$ tokens,\\repeat} (ctx);
+\end{tikzpicture}

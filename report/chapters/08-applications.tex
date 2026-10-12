@@ -1,0 +1,65 @@
+\chapter{Applications}
+\label{ch:apps}
+
+The design choices of \NS---a million-token context, high throughput on long
+generations, and post-training focused on multi-step tool use---point to a
+particular class of applications. The Nemotron~3 white paper positions Super
+for collaborative agents and high-volume workloads such as IT ticket
+automation~\cite{nvidia2025nemotron3}. The main application areas are outlined
+below.
+
+\section{Coding Agents}
+
+A coding agent must read a repository, locate the cause of an issue, edit
+several files and run the tests, often over dozens of steps. Each step adds
+tool output to the context, so the context grows quickly and most of the work
+is \emph{prefill}: processing a long input before a short action. This is the
+workload for which the NVFP4 checkpoint was designed. \NS\ was trained for it
+directly, with SFT data built from real GitHub issues and a dedicated
+software-engineering RL stage, and it scores 60.5 on SWE-Bench with the
+OpenHands harness (Table~\ref{tab:main}).
+
+\section{Terminal and Multi-Step Task Automation}
+
+Closely related are assistants that operate a command line: installing
+software, inspecting logs, and chaining commands to complete an administrative
+task. The model was trained on terminal-use data and is evaluated on Terminal
+Bench. Long sessions benefit from the constant-size Mamba state, because the
+cost of each new token does not climb as the session history accumulates in
+the way it does for a model built only from attention layers.
+
+\section{Tool-Using Agents and Customer Service}
+
+Many business applications consist of a model calling external tools: querying
+a database, searching the web, or invoking an API to check an order or change
+a booking. \NS\ was trained with conversational and general-purpose
+tool-calling data and with search and SQL datasets, and is evaluated on
+TauBench (airline, retail and telecom customer-service scenarios), BrowseComp
+(web search) and BIRD (text-to-SQL). High throughput matters here because such
+systems serve many users at once and often run several model calls per
+request.
+
+\section{Long-Document Analysis}
+
+With a context of one million tokens, entire contracts, sets of research
+papers, financial reports or codebases can be given to the model at once,
+instead of being cut into fragments and retrieved piecemeal. The RULER score
+of 91.6 at one million tokens indicates that the model can actually locate and
+use information at that range, rather than merely accept it as input.
+
+\section{Reasoning with Controllable Effort}
+
+The model supports three reasoning modes---off, regular and low-effort---which
+can be combined with a reasoning budget set at inference time. An application
+can thus spend long reasoning traces on hard problems and answer simple
+requests quickly, trading accuracy against cost request by request.
+
+\section{On-Premises and Customised Deployment}
+
+Because the weights, the quantized checkpoints and much of the training data
+are openly released, an organisation can run the model on its own hardware and
+fine-tune it on its own data. This is important where data cannot leave the
+organisation, for example in finance, healthcare or government. The FP8 and
+NVFP4 checkpoints target the Hopper and Blackwell GPU generations
+respectively, and the built-in MTP heads provide speculative decoding without
+a separate draft model.

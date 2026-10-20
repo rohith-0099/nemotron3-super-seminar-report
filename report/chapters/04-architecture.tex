@@ -3,89 +3,59 @@
 
 \section{Overview}
 
-\NS\ is an open model developed by NVIDIA and released in April
-2026~\cite{nvidia2026super}. Its full name, \emph{Nemotron~3 Super
-120B-A12B}, states its two sizes: 120.6 billion parameters in total and 12.7
-billion active per forward pass (12.1 billion excluding embeddings). It scales
-up the hybrid Mamba--attention MoE architecture introduced with
-\NN~\cite{nvidia2025nemotron3,nvidia2025nano3} and is the first model in the
-family to
-\begin{enumerate}
-  \item use \textbf{LatentMoE} layers in place of standard MoE layers,
-  \item include \textbf{Multi-Token Prediction (MTP)} layers for native
-        speculative decoding, and
-  \item be pretrained in the 4-bit \textbf{NVFP4} number format.
-\end{enumerate}
-The first two are architectural and are described in this chapter together
-with the hybrid layer layout; NVFP4 pretraining is covered in
-Chapter~\ref{ch:training}. Table~\ref{tab:arch} lists the main architectural
-dimensions.
+\NS\ 120B-A12B~\cite{nvidia2026super} has 120.6 billion parameters in total
+and 12.7 billion active per token. It scales up the hybrid Mamba--attention MoE
+design of \NN~\cite{nvidia2025nano3} and is the first model in the family to
+use \textbf{LatentMoE}, \textbf{Multi-Token Prediction (MTP)} for native
+speculative decoding, and \textbf{NVFP4} pretraining
+(Chapter~\ref{ch:training}). Table~\ref{tab:arch} lists its main dimensions.
 
-\begin{table}[htbp]
+\begin{table}[!htbp]
 \centering
 \small
 \caption[Architectural dimensions of Nemotron 3 Super]{Architectural dimensions
-of \NS\ 120B-A12B Base (from~\cite{nvidia2026super}, Table~1)}
+of \NS\ (from~\cite{nvidia2026super}, Table~1)}
 \label{tab:arch}
-\begin{tabular}{@{}lr@{}}
+\begin{tabular}{@{}lr@{\hspace{2.5em}}lr@{}}
 \toprule
-\textbf{Configuration} & \textbf{Value} \\
+\textbf{Configuration} & \textbf{Value} & \textbf{Configuration} & \textbf{Value} \\
 \midrule
-Total layers & 88 \\
-Model (hidden) dimension $d$ & 4096 \\
-\midrule
-Attention query heads & 32 \\
-Attention key--value heads & 2 \\
-Attention head dimension & 128 \\
-\midrule
-Mamba state dimension & 128 \\
-Mamba groups & 8 \\
-Mamba heads & 128 \\
-Mamba head dimension & 64 \\
-\midrule
-Expert hidden dimension $m$ & 2688 \\
-Shared expert intermediate size & 5376 \\
-Total experts per layer $N$ & 512 \\
-Activated experts per token (top-$k$) & 22 \\
-MoE latent size $\ell$ & 1024 \\
-\midrule
-MTP layers (shared weights) & 2 \\
+Total layers & 88 & Mamba heads / head dim. & 128 / 64 \\
+Hidden dimension $d$ & 4096 & Mamba state dimension & 128 \\
+Attention query heads & 32 & Experts per layer $N$ & 512 \\
+Attention KV heads & 2 & Active experts (top-$k$) & 22 \\
+Attention head dimension & 128 & Expert hidden dimension & 2688 \\
+MTP layers (shared) & 2 & MoE latent size $\ell$ & 1024 \\
 \bottomrule
 \end{tabular}
 \end{table}
 
 \section{Hybrid Interleaved Layout}
 
-\subsection{Layer Pattern}
+Every sequence mixer---a Mamba-2 block or, occasionally, an attention
+block---is followed by a LatentMoE layer (Figure~\ref{fig:layer-pattern}). Of
+the 88 layers, 40 are Mamba-2, 40 are LatentMoE and only 8 are attention
+layers, about 9\% of the stack, in line with the roughly 8\% found optimal by
+Waleffe et al.~\cite{waleffe2024empirical}.
 
-The 88 layers follow a periodic interleaving pattern in which every sequence
-mixer---a Mamba-2 block or, occasionally, an attention block---is followed by a
-LatentMoE layer. Figure~\ref{fig:layer-pattern} shows the pattern published by
-NVIDIA.
-
-\begin{figure}[htbp]
+\begin{figure}[!htbp]
   \centering
   \includegraphics[width=\linewidth]{n3s-fig02-layer-pattern.pdf}
   \caption[Nemotron 3 Super layer pattern]{\NS\ layer pattern: Mamba-2 blocks
-  paired with LatentMoE layers, with a small number of attention layers
-  inserted at intervals. \source{NVIDIA (2026)~\cite{nvidia2026super}, Fig.~2}}
+  paired with LatentMoE layers, with a few attention layers at intervals.
+  \source{NVIDIA (2026)~\cite{nvidia2026super}, Fig.~2}}
   \label{fig:layer-pattern}
 \end{figure}
 
-Reading the pattern from left to right and multiplying out the repeat counts
-gives the layer budget in Table~\ref{tab:layer-count}. Of the 88 layers, 40
-are Mamba-2 blocks, 40 are LatentMoE layers and only 8 are self-attention
-layers---about 9\% of the stack, in line with the roughly 8\% that the earlier
-empirical study found to be optimal~\cite{waleffe2024empirical}. The attention
-layers are not spread perfectly evenly: seven of the eight fall within the
-first 71 layers, and the final eight layers (four Mamba--MoE pairs) contain
-none.
+Multiplying out the repeat counts in the pattern gives the layer budget in
+Table~\ref{tab:layer-count}. Seven of the eight attention layers fall within
+the first 71 layers, and the final eight layers contain none.
 
-\begin{table}[htbp]
+\begin{table}[!htbp]
 \centering
 \small
 \caption[Layer budget of Nemotron 3 Super]{Layer budget of \NS, counted by the
-author from the published layer pattern (Figure~\ref{fig:layer-pattern})}
+author from the published layer pattern}
 \label{tab:layer-count}
 \begin{tabular}{@{}lcccc@{}}
 \toprule
@@ -103,274 +73,171 @@ $(\text{M},\text{E})\times 4$ & 4 & 0 & 4 & 8 \\
 \end{tabular}
 \end{table}
 
-\subsection{Division of Labour}
+The layout is a division of labour. The Mamba-2 blocks do the heavy lifting in
+linear time with a constant-size state. The few attention layers act as global
+\emph{anchors} where every token can reach every other token, so information
+that the Mamba state compressed away can still be retrieved exactly. The
+attention layers use GQA with 32 query heads and only 2 KV heads; there are no
+positional embeddings, and RMSNorm is used for normalisation.
 
-The reasoning behind the layout is a division of labour. The Mamba-2 blocks do
-the heavy lifting: they process the sequence in linear time and, during
-generation, keep a state of constant size, which substantially reduces memory
-overhead and latency. The few attention layers act as global \emph{anchors}.
-At these points every token can interact directly with every other token, so
-information that the Mamba state has compressed away can still be retrieved
-exactly and routed across the whole context. In short, Mamba does the heavy
-work and attention is used only where it is needed.
-
-The attention layers use Grouped-Query Attention~\cite{ainslie2023gqa} with 32
-query heads but only 2 key--value heads of dimension 128. Consistent with
-earlier Nemotron models, there are no positional embeddings, no dropout and no
-bias terms in the linear layers; RMSNorm is used for normalisation, and the
-embedding and output weights are not tied. This configuration supports context
-lengths of up to one million tokens.
-
-\subsection{What the Layout Saves}
-
-The benefit can be made concrete with a rough estimate from the values in
-Table~\ref{tab:arch}. This is the author's own back-of-the-envelope
-calculation, not a figure from the NVIDIA report. Each attention layer stores a
-key and a value for each of its 2 KV heads of dimension 128, that is
-$2 \times 2 \times 128 = 512$ numbers per token. With 8 attention layers the
-KV cache holds $8 \times 512 = 4096$ numbers per token, or about
-$4.1 \times 10^{9}$ numbers for a one-million-token context---roughly 4\,GB
-when each number is stored in 8 bits, as in the released checkpoints. If
-attention were used in place of all 40 Mamba-2 blocks as well, the cache would
-be six times larger for the same context. The Mamba-2 state, by contrast, does
-not depend on the context length at all. Assuming the standard Mamba-2 state
-layout of (heads $\times$ head dimension $\times$ state dimension), each block
-keeps about $128 \times 64 \times 128 \approx 1.05$ million numbers, so the 40
-blocks together hold about 42 million numbers, a few tens of megabytes, whether
-the context is one thousand or one million tokens long.
+The saving is large. By the author's estimate, 8 attention layers with 2 KV
+heads of dimension 128 store $8 \times 2 \times 2 \times 128 = 4096$ numbers
+per token, about 4\,GB at one million tokens in 8-bit precision; using
+attention in place of all 40 Mamba blocks too would make it six times larger.
+The 40 Mamba-2 states together hold about 42 million numbers---a few tens of
+megabytes---regardless of context length.
 
 \section{LatentMoE}
 
-\subsection{Motivation}
-
-In \NS\ every MoE layer has 512 experts and activates 22 of them for each
-token. This is how 120 billion parameters can exist while only about 12 billion
-run per token. The model does not, however, use a standard MoE layer.
-
-LatentMoE~\cite{elango2026latentmoe} starts from the observation that existing
-MoE designs are tuned for accuracy per FLOP, whereas real deployments are
-limited by other things. NVIDIA's analysis distils the following
-principles~\cite{nvidia2026super}:
+Each MoE layer has 512 experts, 22 of them active per token. LatentMoE~\cite{elango2026latentmoe}
+starts from the observation that existing MoE designs are tuned for accuracy
+per FLOP, whereas real deployments are limited by other things. NVIDIA's
+analysis gives five principles~\cite{nvidia2026super}:
 \begin{enumerate}
-  \item In low-latency serving, the cost is dominated by the \emph{memory
-        bandwidth} needed to read expert weights. Each expert matrix has size
-        $d \times m$, where $d$ is the hidden dimension and $m$ the expert's
-        intermediate dimension, so this cost falls only if $d$ or $m$ falls.
-  \item In throughput-oriented, distributed serving, the cost is dominated by
-        all-to-all \emph{routing} of tokens to the devices that hold their
-        experts. The volume routed scales as $d \times K$, where $K$ is the
-        number of active experts.
-  \item Model quality depends on the effective non-linear budget $K \cdot m$,
-        so $K$ and $m$ should not be reduced.
-  \item The hidden dimension $d$ can be reduced only down to a task-dependent
-        effective feature rank $r_{\mathrm{eff}}$; below it, quality collapses.
-  \item Increasing both the number of experts $N$ and the number of active
-        experts $K$ improves quality, because the number of possible expert
-        combinations grows exponentially.
+  \item In low-latency serving the cost is the \emph{memory bandwidth} to read
+        expert weights of size $d \times m$, where $d$ is the hidden dimension
+        and $m$ the expert's intermediate dimension.
+  \item In distributed serving the cost is all-to-all \emph{routing} of tokens,
+        whose volume scales as $d \times K$ for $K$ active experts.
+  \item Quality depends on the non-linear budget $K \cdot m$, so $K$ and $m$
+        should not be reduced.
+  \item $d$ can be reduced only down to a task-dependent effective rank;
+        below it, quality collapses.
+  \item More experts $N$ and more active experts $K$ improve quality, because
+        the number of expert combinations grows exponentially.
 \end{enumerate}
-Principles 1--3 single out the hidden dimension $d$ as the quantity to shrink,
-principle 4 limits how far it can go, and principle 5 says what to do with the
-savings.
-
-\subsection{Design}
-
-LatentMoE applies these principles directly
-(Figure~\ref{fig:latentmoe}). Each token $x \in \mathbb{R}^{d}$ is first
-projected into a smaller \emph{latent} space $\mathbb{R}^{\ell}$ by a learned
-down-projection $W_{\downarrow} \in \mathbb{R}^{\ell \times d}$. The routed
-experts operate entirely in this latent space, and their combined output is
-projected back to dimension $d$ by a learned up-projection $W_{\uparrow} \in
-\mathbb{R}^{d \times \ell}$:
+Principles 1--3 single out $d$ as the quantity to shrink, principle 4 limits
+how far, and principle 5 says how to spend the savings. Each token is projected from dimension $d$
+into a smaller latent space of size $\ell$, the routed experts work there, and
+the result is projected back (Figure~\ref{fig:latentmoe}):
 \begin{equation}
   y = W_{\uparrow} \sum_{i \,\in\, \operatorname{TopK}(g(x),\,K')}
       g_i(x)\, E_i\bigl(W_{\downarrow}\,x\bigr) \;+\; E_{\text{shared}}(x).
   \label{eq:latentmoe}
 \end{equation}
-Moving the experts into the latent space reduces both the weights loaded per
-expert and the data routed per token by the compression factor $\alpha =
-d/\ell$. These savings are then spent on \emph{more experts}: the total number
-grows from $N$ to $N' = \alpha N$ and the number active per token from $K$ to
-$K' = \alpha K$. The smaller dimension offsets the larger expert count, so the
-inference cost stays roughly the same while quality improves. Everything that
-is not routed---the router itself, the shared expert that every token passes
-through, and all non-MoE layers---stays in the full dimension $d$.
+This cuts weight loads and routing traffic by $\alpha = d/\ell$, and the
+saving is spent on $\alpha$ times more experts, improving quality at roughly
+the same cost.
 
-\begin{figure}[htbp]
+\begin{figure}[!htbp]
   \centering
-  \begin{subfigure}[t]{0.47\linewidth}
+  \begin{subfigure}[t]{0.42\linewidth}
     \centering
     \includegraphics[width=\linewidth]{n3s-fig03a-standard-moe.png}
     \caption{Standard MoE}
-  \end{subfigure}\hfill
-  \begin{subfigure}[t]{0.47\linewidth}
+  \end{subfigure}\hspace{0.06\linewidth}
+  \begin{subfigure}[t]{0.42\linewidth}
     \centering
     \includegraphics[width=\linewidth]{n3s-fig03b-latent-moe.png}
     \caption{LatentMoE}
   \end{subfigure}
   \caption[Standard MoE compared with LatentMoE]{Standard MoE compared with
-  LatentMoE. In LatentMoE tokens are projected from the hidden dimension $d$
-  into a smaller latent dimension $\ell$ for routing and expert computation.
-  \source{NVIDIA (2026)~\cite{nvidia2026super}, Fig.~3}}
+  LatentMoE, where tokens are projected into a smaller latent dimension $\ell$
+  for routing and expert computation. \source{NVIDIA
+  (2026)~\cite{nvidia2026super}, Fig.~3}}
   \label{fig:latentmoe}
 \end{figure}
 
-\subsection{LatentMoE in Nemotron 3 Super}
+In \NS, $d = 4096$ and $\ell = 1024$, so $\alpha = 4$. By the author's
+estimate, the routed experts hold about 113 of the 120.6 billion parameters,
+of which only $22/512 \approx 4.3\%$ are used per token---the reason the
+active size is about a tenth of the total. On a 95B model with the same
+setting, LatentMoE matched or improved on the baseline's validation loss
+(Figure~\ref{fig:latentmoe-loss}).
 
-In \NS\ the hidden dimension is $d = 4096$ and the latent dimension is $\ell =
-1024$, a compression factor of $\alpha = 4$. Experts therefore read and write
-1024-dimensional vectors, which cuts the routed weight loads and the
-token-routing traffic by a factor of four compared with experts working at
-4096 dimensions. Each layer has $N' = 512$ experts with an intermediate
-dimension of 2688, of which $K' = 22$ are active per token, plus a shared
-expert with an intermediate size of 5376.
-
-An approximate count shows where the parameters are (again the author's
-estimate, assuming two weight matrices per expert). One expert has about $2
-\times 1024 \times 2688 \approx 5.5$ million parameters; 512 of them make about
-2.8 billion per layer, and 40 layers make about 113 billion. In other words
-well over 90\% of the model's 120.6 billion parameters are routed experts, of
-which only $22/512 \approx 4.3\%$ are touched for any given token. That ratio
-is the reason the active parameter count is roughly a tenth of the total.
-
-Evidence that the design improves quality comes from the LatentMoE paper,
-which trained a 95B-parameter model with the same $\ell=1024$, $\alpha=4$
-setting. As Figure~\ref{fig:latentmoe-loss} shows, the efficiency-oriented
-variant matches the baseline's validation loss and the accuracy-oriented
-variant improves on it.
-
-\begin{figure}[htbp]
+\begin{figure}[!htbp]
   \centering
-  \includegraphics[width=0.72\linewidth]{latentmoe-fig06-95b-val-loss.png}
+  \includegraphics[width=0.6\linewidth]{latentmoe-fig06-95b-val-loss.png}
   \caption[Validation loss of LatentMoE variants on a 95B model]{Validation
-  loss of a 95B-total, 8B-active baseline MoE and two LatentMoE configurations
-  ($\ell=1024$, $\alpha=4$). \source{Elango et al.\
-  (2026)~\cite{elango2026latentmoe}, Fig.~6}}
+  loss of a 95B baseline MoE and two LatentMoE configurations. \source{Elango
+  et al.\ (2026)~\cite{elango2026latentmoe}, Fig.~6}}
   \label{fig:latentmoe-loss}
 \end{figure}
 
-The router uses a sigmoid score function with expert biasing. To keep the 512
-experts evenly used, training combines auxiliary-loss-free load
-balancing~\cite{deepseek2024v3} (update rate $10^{-3}$) with a standard
-load-balancing loss~\cite{lepikhin2020gshard} (coefficient $10^{-4}$).
-
 \section{Multi-Token Prediction}
 
-\subsection{Training Objective}
+\NS\ adds an MTP objective~\cite{gloeckle2024mtp,deepseek2024v3}: auxiliary
+heads also predict tokens further ahead, and the model is trained on
+$\mathcal{L} = \mathcal{L}_{\text{next}} + 0.3\,\mathcal{L}_{\text{MTP}}$,
+which improves validation loss and accuracy.
 
-A conventional language model is trained to predict only the next token.
-\NS\ adds a Multi-Token Prediction objective~\cite{gloeckle2024mtp,deepseek2024v3}:
-at each position, auxiliary heads also predict tokens further ahead. With
-$\mathcal{L}_{\text{next}}$ the usual next-token loss and
-$\mathcal{L}_{\text{MTP}}$ the loss of the auxiliary predictions, the model is
-trained on
-\begin{equation}
-  \mathcal{L} = \mathcal{L}_{\text{next}} + \lambda\,\mathcal{L}_{\text{MTP}},
-  \qquad \lambda = 0.3 .
-  \label{eq:mtp}
-\end{equation}
-This encourages representations that capture multi-step dependencies, and the
-report states that it leads to consistent improvements in validation loss and
-downstream accuracy.
+MTP also speeds up generation through speculative
+decoding~\cite{leviathan2022speculative,chen2023speculative}: a cheap draft
+proposes several tokens, the full model checks them in one pass, and the
+agreeing ones are accepted (Figure~\ref{fig:specdec}). The output still
+follows the full model's distribution. In \NS\ the MTP heads are the draft
+model, so no separate network is needed and the extra computation is small.
 
-\subsection{Speculative Decoding}
+Standard MTP uses independent heads, each trained for one fixed offset, which
+limits a draft to as many tokens as there are heads. Reusing one head
+repeatedly works poorly, because a head trained on ground-truth hidden states
+is suddenly fed its own predictions. \NS\ instead \emph{shares the weights} of
+its two MTP layers during training, giving a single head exposed to several
+offsets. It is more robust to its own outputs, so it can be applied
+recursively to draft longer sequences without adding parameters.
 
-MTP also makes generation faster. In speculative
-decoding~\cite{leviathan2022speculative,chen2023speculative} a cheap
-\emph{draft} model proposes several tokens, and the large model then checks
-all of them in a single forward pass. The drafts that agree with what the large
-model would have produced are accepted; from the first disagreement onwards
-they are discarded and generation resumes from the large model's own token.
-The verification step guarantees that the output follows the large model's
-own distribution, yet several tokens can be emitted for the price of one pass
-of the large model.
-Figure~\ref{fig:specdec} shows the loop.
-
-\begin{figure}[htbp]
+\begin{figure}[!htbp]
   \centering
   \input{figures/tikz/specdec}
   \caption[Speculative decoding loop using MTP heads]{The speculative decoding
-  loop, with the MTP head acting as the built-in draft model (drawn by the
-  author).}
+  loop, with the MTP head as the built-in draft model (drawn by the author).}
   \label{fig:specdec}
 \end{figure}
 
-Normally the draft model is a separate, smaller network. In \NS\ the MTP heads
-play that role, so no external model is needed and the extra computation is
-small.
+On SPEED-Bench with a draft length of 7, \NS\ accepts on average 3.45 tokens
+per verification step, more than DeepSeek-R1 (2.70) and Qwen3-Next (3.33), and
+leads in eight of eleven categories (Table~\ref{tab:mtp}). Deeper drafts move
+the throughput--latency curve outwards (Figure~\ref{fig:mtp-acceptance}).
 
-\subsection{Shared-Weight Heads}
-
-Standard MTP uses $N$ independent heads, each trained for one fixed offset
-(token $n+2$, $n+3$, and so on). That limits a draft to $N$ tokens. Reusing one
-of those heads repeatedly to draft further does not work well, because a head
-trained on ground-truth hidden states is suddenly fed its own generated states,
-and the acceptance rate drops as the draft grows.
-
-\NS\ instead \emph{shares the parameters} across its two MTP layers during
-training, giving a single head that has been exposed to several offsets. The
-head is thereby regularised across prediction horizons and is more robust to
-its own outputs, so the same head can be applied recursively at inference to
-produce longer drafts. Acceptance still falls with draft length, but more
-slowly than with independently trained heads, and no parameters are added.
-
-\subsection{Measured Benefit}
-
-NVIDIA evaluates MTP quality on SPEED-Bench with a draft length of 7.
-Table~\ref{tab:mtp} reports the average \emph{acceptance length}---the number
-of tokens accepted per verification step. \NS\ accepts 3.45 tokens per check
-on average, the highest of the three models compared, and leads in eight of
-the eleven categories. Figure~\ref{fig:mtp-acceptance} shows that its
-acceptance rate stays above that of DeepSeek-R1 at every draft position, with
-the gap widening at positions 4--7, where recursive drafting is hardest.
-
-\begin{table}[htbp]
+\begin{table}[!htbp]
 \centering
 \small
 \caption[MTP average acceptance lengths on SPEED-Bench]{MTP average acceptance
-lengths on SPEED-Bench with a draft length of 7 (from~\cite{nvidia2026super},
-Table~2). Best value in each row in bold.}
+lengths on SPEED-Bench, draft length 7 (selected categories
+from~\cite{nvidia2026super}, Table~2)}
 \label{tab:mtp}
 \begin{tabular}{@{}lccc@{}}
 \toprule
 \textbf{Category} & \textbf{DeepSeek-R1} & \textbf{Qwen3-Next} & \textbf{\NS} \\
 \midrule
 Coding        & 2.99 & \textbf{4.32} & 3.78 \\
-Humanities    & 2.67 & 3.07 & \textbf{3.26} \\
 Math          & 2.98 & \textbf{3.89} & 3.73 \\
 Multilingual  & 2.83 & 3.97 & \textbf{4.05} \\
-QA            & 2.63 & 3.09 & \textbf{3.16} \\
 RAG           & 2.79 & 3.53 & \textbf{3.78} \\
 Reasoning     & 2.80 & 3.47 & \textbf{3.59} \\
-Roleplay      & 2.19 & 2.17 & \textbf{2.82} \\
-STEM          & 2.79 & \textbf{3.37} & 3.30 \\
 Summarization & 2.59 & 3.06 & \textbf{3.48} \\
-Writing       & 2.41 & 2.69 & \textbf{2.99} \\
 \midrule
-\textbf{Average} & 2.70 & 3.33 & \textbf{3.45} \\
+\textbf{Average (all 11)} & 2.70 & 3.33 & \textbf{3.45} \\
 \bottomrule
 \end{tabular}
 \end{table}
 
-\begin{figure}[htbp]
+\begin{figure}[!htbp]
   \centering
-  \begin{subfigure}[b]{0.50\linewidth}
-    \centering
-    \includegraphics[width=\linewidth]{n3s-fig04-mtp-acceptance.pdf}
-    \caption{Acceptance rate by draft index (draft length 7).}
-  \end{subfigure}\hfill
   \begin{subfigure}[b]{0.46\linewidth}
     \centering
+    \includegraphics[width=\linewidth]{n3s-fig04-mtp-acceptance.pdf}
+    \caption{Acceptance rate by draft index.}
+  \end{subfigure}\hfill
+  \begin{subfigure}[b]{0.44\linewidth}
+    \centering
     \includegraphics[width=\linewidth]{n3s-fig05-mtp-throughput.png}
-    \caption{Total against per-user throughput with MTP off and with draft
-    lengths 1 and 3.}
+    \caption{Throughput with MTP off and draft lengths 1 and 3.}
   \end{subfigure}
   \caption[MTP acceptance rate and serving throughput]{MTP acceptance on
-  SPEED-Bench and its effect on serving throughput for the NVFP4 checkpoint on
-  a B300 GPU. \source{NVIDIA (2026)~\cite{nvidia2026super}, Figs.~4 and~5}}
+  SPEED-Bench and its effect on serving throughput (NVFP4, B300 GPU).
+  \source{NVIDIA (2026)~\cite{nvidia2026super}, Figs.~4 and~5}}
   \label{fig:mtp-acceptance}
 \end{figure}
 
-These acceptance gains translate into serving efficiency: increasing the draft
-depth from 1 to 3 shifts the throughput--latency curve outwards, so that for
-any given per-user latency the server delivers more output tokens per second
-than with MTP disabled.
+\section{Summary of the Architecture}
+
+\NS\ arranges 88 layers so that 40 Mamba-2 blocks carry most of the sequence
+processing, 8 GQA attention layers act as global anchors for exact retrieval,
+and 40 LatentMoE layers provide capacity. LatentMoE compresses each token from
+4096 to 1024 dimensions before routing, which cuts weight traffic and
+communication fourfold and pays for 512 experts with 22 active per token. Two
+shared-weight MTP layers improve training and act as a built-in draft model,
+accepting on average 3.45 tokens per verification step. Together these choices
+give a model with the capacity of 120 billion parameters, the per-token cost of
+about 12 billion, and a KV cache only one sixth the size it would otherwise be.

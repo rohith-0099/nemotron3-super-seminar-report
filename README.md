@@ -30,9 +30,10 @@ Every push that touches `report/` is also compiled by GitHub Actions
 
 ## Before printing
 
-Fill in the placeholder names near the top of `report/main.tex`
-(`\guidename`, `\coordinatorname`, `\hodname`, `\principalname` and their
-designations) and check `\department`.
+The front pages (title, certificate, declaration, acknowledgement) follow the
+College of Engineering Karunagappally seminar format and use
+`report/figures/logo.png`. Student and staff names are set near the top of
+`report/main.tex`.
 
 ## Figures
 

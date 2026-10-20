@@ -1,87 +1,43 @@
 \chapter{Training}
 \label{ch:training}
 
-Training \NS\ has two parts. \emph{Pretraining} teaches the base model
-language and knowledge from 25 trillion tokens of text and then extends it to
-long contexts. \emph{Post-training} turns the base model into an assistant and
-agent through supervised fine-tuning followed by reinforcement learning. The
-overall sequence is:
-\begin{enumerate}
-  \item pretrain on 25 trillion tokens in NVFP4 precision;
-  \item extend the context length to one million tokens;
-  \item fine-tune on more than 7 million supervised samples;
-  \item apply reinforcement learning for coding, mathematics, tool use and
-        interaction quality; and
-  \item retrain (``heal'') the MTP heads.
-\end{enumerate}
+\NS\ is pretrained on 25 trillion tokens in NVFP4 precision, extended to a
+one-million-token context, fine-tuned on more than 7 million samples, trained
+with reinforcement learning, and finally has its MTP heads retrained.
 
 \section{NVFP4 Pretraining}
 
-\subsection{The NVFP4 Format}
+NVFP4~\cite{nvidia2025nvfp4} is a 4-bit format natively accelerated on NVIDIA
+Blackwell GPUs. Each value is a 4-bit E2M1 number; blocks of 16 values share
+an 8-bit (E4M3) scale, and a second FP32 scale is applied per tensor
+(Figure~\ref{fig:nvfp4-format}), about 4.5 bits per value. Its smaller blocks
+make it more accurate than MXFP4.
 
-Large models are normally trained in BF16, a 16-bit floating-point format, and
-more recently in 8-bit FP8. \NS\ goes a step further and is pretrained mostly
-in NVFP4, a 4-bit format that is natively accelerated on NVIDIA Blackwell
-GPUs~\cite{nvidia2025nvfp4}. Fewer bits per number mean less memory traffic and
-faster matrix multiplications, but at most sixteen distinct values can be
-represented, so the format has to be designed carefully.
-
-NVFP4 stores each value as a 4-bit E2M1 element: one sign bit, two exponent
-bits and one mantissa bit. Values are grouped into micro-blocks of 16 elements,
-and each block carries its own 8-bit (E4M3) scale factor chosen so that the
-largest value in the block maps to the largest representable FP4 value. A
-second-level FP32 scale is applied per tensor (Figure~\ref{fig:nvfp4-format}).
-The block scale costs 8 bits per 16 values, so the format uses about 4.5 bits
-per value on average. Compared with the alternative MXFP4 format, NVFP4 uses
-smaller blocks and a finer-grained scale, which is the reason for its better
-accuracy.
-
-\begin{figure}[htbp]
+\begin{figure}[!htbp]
   \centering
-  \includegraphics[width=0.56\linewidth]{nvfp4-fig01-format.pdf}
-  \caption[A matrix stored in NVFP4 format]{A $16\times32$ matrix stored in
-  NVFP4 format: each block holds sixteen contiguous FP4 elements and one FP8
-  scale factor. \source{NVIDIA (2025)~\cite{nvidia2025nvfp4}, Fig.~1}}
+  \includegraphics[width=0.48\linewidth]{nvfp4-fig01-format.pdf}
+  \caption[A matrix stored in NVFP4 format]{A matrix stored in NVFP4: each
+  block holds sixteen FP4 elements and one FP8 scale. \source{NVIDIA
+  (2025)~\cite{nvidia2025nvfp4}, Fig.~1}}
   \label{fig:nvfp4-format}
 \end{figure}
 
-\subsection{The Training Recipe}
+Simply rounding everything to 4 bits makes training diverge. The recipe uses
+two-dimensional block scaling for weights, Random Hadamard Transforms to spread
+outliers, stochastic rounding of gradients, and keeps a few sensitive layers in
+higher precision (Table~\ref{tab:precision-train}). On a 12B model this kept
+the loss close to FP8 over 10T tokens (Figure~\ref{fig:nvfp4-loss}).
 
-Simply rounding everything to 4 bits makes training diverge. The NVFP4
-recipe~\cite{nvidia2025nvfp4,nvidia2025nemotron3} relies on several techniques
-that are all used in \NS:
-\begin{itemize}
-  \item Weights, activations and gradients are all quantized to NVFP4 for the
-        forward pass and for both gradient computations of each linear layer.
-  \item Weights use \emph{two-dimensional} block scaling so that the same
-        quantized weights are seen in the forward and the backward pass, while
-        activations and gradients use one-dimensional blocks.
-  \item \emph{Random Hadamard Transforms} are applied to the inputs of the
-        weight-gradient computation to spread out outliers within a block.
-  \item \emph{Stochastic rounding} is applied to gradient tensors, so that the
-        rounding error is unbiased.
-  \item A small set of sensitive layers is kept at higher precision.
-\end{itemize}
-Figure~\ref{fig:nvfp4-loss} shows the result that motivated the approach: on a
-12B model the NVFP4 validation loss stays close to the FP8 baseline over 10
-trillion tokens.
-
-\begin{figure}[htbp]
+\begin{figure}[!htbp]
   \centering
-  \includegraphics[width=0.74\linewidth]{nvfp4-fig02-val-loss.pdf}
+  \includegraphics[width=0.6\linewidth]{nvfp4-fig02-val-loss.pdf}
   \caption[Validation loss of NVFP4 versus FP8 pretraining]{Validation loss of
-  NVFP4 and FP8 pretraining for a 12B model over 10T tokens. \source{NVIDIA
+  NVFP4 and FP8 pretraining for a 12B model. \source{NVIDIA
   (2025)~\cite{nvidia2025nvfp4}, Fig.~2}}
   \label{fig:nvfp4-loss}
 \end{figure}
 
-Table~\ref{tab:precision-train} lists which parts of \NS\ are trained in which
-format. The few attention layers, the MTP layers, the embeddings, the latent
-projections of LatentMoE and the final 15\% of the network stay in BF16, and
-the Mamba output projection uses MXFP8. Everything else---which includes the
-routed experts that make up the bulk of the parameters---is trained in NVFP4.
-
-\begin{table}[htbp]
+\begin{table}[!htbp]
 \centering
 \small
 \caption[Training precision by layer type]{Training precision by layer type
@@ -92,277 +48,159 @@ routed experts that make up the bulk of the parameters---is trained in NVFP4.
 \textbf{Layer type} & \textbf{Format} & \textbf{Rationale} \\
 \midrule
 All linear layers unless noted & NVFP4 & Default \\
-Final 15\% of the network & BF16 & Promotes training stability at scale \\
-Latent projections & BF16 & Impact on step time is negligible \\
-MTP layers & BF16 & Preserves multi-token prediction capability \\
-QKV and attention projections & BF16 & Maintains fidelity of the few attention layers \\
-Mamba output projection & MXFP8 & Avoids underflows seen when this layer is quantized to NVFP4 \\
-Embedding layers & BF16 & --- \\
+Final 15\% of the network & BF16 & Training stability at scale \\
+Latent projections, embeddings & BF16 & Negligible effect on step time \\
+MTP and attention layers & BF16 & Preserve fidelity of these few layers \\
+Mamba output projection & MXFP8 & Avoids underflow seen with NVFP4 \\
 \bottomrule
 \end{tabularx}
 \end{table}
 
-\subsection{Observations from 25 Trillion Tokens}
+Training was stable over all 25T tokens. Zero-valued weight gradients grew to
+7\% of parameters; a controlled test on \NN\ showed NVFP4 produces about three
+times more than BF16 because 4-bit quantization underflows tiny gradients
+(Figure~\ref{fig:nvfp4-zeros}). Switching to MXFP8 at 19T tokens gave no
+lasting downstream gain (Figure~\ref{fig:nvfp4-healing}), so NVFP4 was kept
+throughout.
 
-\NS\ demonstrates stable NVFP4 training over the full 25-trillion-token
-horizon. The report also documents a side effect. During training the number
-of weight-gradient elements that are exactly zero kept growing, reaching 7\%
-of all parameters by the end, and in some expert layers the norms of certain
-channels shrank towards zero. To check that this was not a sign of unhealthy
-training, the authors ran a controlled comparison on the smaller \NN\
-architecture (Figure~\ref{fig:nvfp4-zeros}). NVFP4 training produced roughly
-three times more zero-valued weight gradients than BF16 at the same point, and
-the count fell back to the baseline when a partly trained NVFP4 model was
-switched to BF16. The explanation offered is that 4-bit quantization underflows
-gradients that are already very small to exactly zero, so low-norm channels
-fade more quickly; a BF16 model shows the same pattern, only much later in
-training.
-
-\begin{figure}[htbp]
+\begin{figure}[!htbp]
   \centering
-  \includegraphics[width=\linewidth]{n3s-fig07-nvfp4-zero-grads.pdf}
-  \caption[Zero-valued weight gradients under NVFP4 and BF16 training]{Number
-  of zero-valued weight-gradient elements on \NN: the released BF16 model
-  (left) and a 1T-token ablation in BF16 and NVFP4 (right). \source{NVIDIA
+  \includegraphics[width=0.92\linewidth]{n3s-fig07-nvfp4-zero-grads.pdf}
+  \caption[Zero-valued weight gradients under NVFP4 and BF16 training]{Zero-valued
+  weight-gradient elements on \NN\ under BF16 and NVFP4. \source{NVIDIA
   (2026)~\cite{nvidia2026super}, Fig.~7}}
   \label{fig:nvfp4-zeros}
 \end{figure}
 
-The authors also tested whether switching to higher precision near the end of
-training would help. Promoting all tensors to MXFP8 at 19T tokens improved the
-loss curve but gave no sustained gain on downstream tasks
-(Figure~\ref{fig:nvfp4-healing}), so the released model was pretrained with
-the NVFP4 recipe for the entire run.
-
-\begin{figure}[htbp]
+\begin{figure}[!htbp]
   \centering
-  \includegraphics[width=0.62\linewidth]{n3s-fig09-nvfp4-healing.pdf}
+  \includegraphics[width=0.52\linewidth]{n3s-fig09-nvfp4-healing.pdf}
   \caption[Effect of switching from NVFP4 to MXFP8 late in pretraining]{Change
-  in downstream accuracy after switching the network precision to MXFP8; values
-  above zero would indicate an improvement over NVFP4. \source{NVIDIA
+  in downstream accuracy after switching to MXFP8. \source{NVIDIA
   (2026)~\cite{nvidia2026super}, Fig.~9}}
   \label{fig:nvfp4-healing}
 \end{figure}
 
-\section{Pretraining Data}
+\section{Pretraining Data and Optimisation}
 
-The pretraining corpus spans 16 high-level categories and follows the \NN\
-data mixture~\cite{nvidia2025nano3}. The largest component is web-crawl data,
-divided into quality tiers together with synthetic rewrites of the
-higher-quality tiers. The remainder covers mathematics, Wikipedia, code,
-academic text, multilingual data, PDF-derived text and synthetic
-instruction-style data for general, STEM and coding topics.
+The corpus spans 16 categories---web crawl in quality tiers with synthetic
+rewrites, mathematics, Wikipedia, code, academic, multilingual and synthetic
+instruction data---plus new synthetic sets for code concepts, algorithmic
+problems, economics, formal logic and multiple-choice reasoning. A two-phase
+curriculum (Figure~\ref{fig:blends}) uses diverse data for the first 20T tokens
+and shifts to high-quality sources for the last 5T.
 
-New synthetic datasets were added for \NS\ and released publicly as
-\emph{Nemotron-Pretraining-Specialized-v1.1}:
-\begin{itemize}
-  \item \textbf{Code concepts:} about 15 million Python problem--solution
-        pairs generated from a taxonomy of programming concepts and validated
-        by parsing.
-  \item \textbf{Unconditional algorithmic problems:} algorithmic and
-        LeetCode-style problems with edge cases and unit tests, de-duplicated
-        and de-contaminated against standard coding benchmarks.
-  \item \textbf{Economics and formal logic:} multiple-choice and worked
-        problems with step-by-step solutions, verified by a model.
-  \item \textbf{Multiple choice:} about 3.5 million MMLU-style questions with
-        reasoning, kept only when several independent solutions agreed.
-\end{itemize}
-
-Training uses a two-phase curriculum (Figure~\ref{fig:blends}). Phase~1,
-covering the first 80\% of training (20 trillion tokens), emphasises diversity
-and broad coverage. Phase~2, the remaining 20\% (5 trillion tokens), shifts
-towards high-quality sources such as Wikipedia to refine accuracy.
-
-\begin{figure}[htbp]
+\begin{figure}[!htbp]
   \centering
-  \begin{subfigure}[b]{0.49\linewidth}
+  \begin{subfigure}[b]{0.44\linewidth}
     \centering
     \includegraphics[width=\linewidth]{n3s-fig10a-phase1-blend.pdf}
     \caption{Phase 1}
   \end{subfigure}\hfill
-  \begin{subfigure}[b]{0.49\linewidth}
+  \begin{subfigure}[b]{0.44\linewidth}
     \centering
     \includegraphics[width=\linewidth]{n3s-fig10b-phase2-blend.pdf}
     \caption{Phase 2}
   \end{subfigure}
   \caption[Data mixtures for the two pretraining phases]{Data mixtures for the
-  two phases of pretraining. \source{NVIDIA (2026)~\cite{nvidia2026super},
+  two pretraining phases. \source{NVIDIA (2026)~\cite{nvidia2026super},
   Fig.~10}}
   \label{fig:blends}
 \end{figure}
 
-\section{Optimisation Setup}
+Training uses AdamW with a Warmup--Stable--Decay schedule (peak learning rate
+$4.5 \times 10^{-4}$), 8192-token sequences and about 25M tokens per step.
+Instead of separate decay runs to track progress, recent checkpoints were
+\emph{merged} by weighted averaging; merges scored 2--4 points higher than raw
+checkpoints during the stable phase (Figure~\ref{fig:merge}), saving an
+estimated 16\% of pretraining compute.
 
-Pretraining uses the AdamW optimiser (weight decay 0.1, $\beta_1 = 0.9$,
-$\beta_2 = 0.95$) with a Warmup--Stable--Decay learning-rate schedule. The
-learning rate is warmed up over the first 200 billion tokens to a peak of $4.5
-\times 10^{-4}$, held constant, and then decayed over the final 5 trillion
-tokens to $4.5 \times 10^{-6}$. The sequence length is 8192 tokens and the
-batch size is 3072 sequences, about 25 million tokens per step.
-
-While the learning rate is constant, individual checkpoints give noisy
-benchmark scores. Rather than running separate decay runs to measure progress,
-the team \emph{merged} checkpoints---a weighted average over a sliding window
-of recent checkpoints---and evaluated the merged model. The best merge
-outperformed the corresponding raw checkpoint by 2--4 points on average over
-twelve benchmarks during the stable phase (Figure~\ref{fig:merge}), and the
-report estimates that avoiding dedicated decay runs could save on the order of
-16\% of the pretraining compute. The gap closes during the final decay phase.
-The base checkpoint chosen for post-training was itself a merge over a
-500-billion-token window.
-
-\begin{figure}[htbp]
+\begin{figure}[!htbp]
   \centering
-  \includegraphics[width=0.95\linewidth]{n3s-fig11-checkpoint-merge.pdf}
+  \includegraphics[width=0.85\linewidth]{n3s-fig11-checkpoint-merge.pdf}
   \caption[Trained checkpoints versus merged checkpoints during pretraining]{Average
-  accuracy over 12 benchmarks for trained checkpoints and for the best offline
-  checkpoint merge; the shaded region is the learning-rate decay phase.
+  accuracy over 12 benchmarks for trained and merged checkpoints.
   \source{NVIDIA (2026)~\cite{nvidia2026super}, Fig.~11}}
   \label{fig:merge}
 \end{figure}
 
-\section{Long-Context Extension}
-
-Pretraining uses sequences of 8192 tokens, far short of the one-million-token
-target. A dedicated long-context phase is therefore added at the end of
-pretraining. The model continues training at a constant learning rate of $4.5
-\times 10^{-6}$ on a blend of 20\% long-document question-answering data and
-80\% Phase~2 data, in two stages:
-\begin{enumerate}
-  \item 34 billion tokens at a context length of 1{,}048{,}576 tokens;
-  \item 17 billion tokens alternating between 1M-token and 4k-token sequences,
-        added to remove a small regression on mathematics benchmarks.
-\end{enumerate}
-Training on million-token sequences needs heavy parallelism: the report cites
-64-way context parallelism, 2-way tensor parallelism and 64-way expert
-parallelism on GB200 GPUs. The hybrid architecture is what makes this
-practical, because 80 of the 88 layers have no quadratic cost.
+A final long-context phase continues at a constant learning rate on 20\%
+long-document question-answering data and 80\% Phase~2 data: 34B tokens at a
+context of 1,048,576 tokens, then 17B tokens alternating 1M and 4k sequences to
+remove a small regression on mathematics. Million-token sequences need 64-way
+context parallelism and 64-way expert parallelism on GB200 GPUs; this is
+practical because 80 of the 88 layers have no quadratic cost.
 
 \section{Supervised Fine-Tuning}
 
-Post-training follows the general recipe of \NN\ with a much stronger emphasis
-on agentic tasks. Figure~\ref{fig:posttraining} gives an overview.
-
-\begin{figure}[htbp]
-  \centering
-  \includegraphics[width=\linewidth]{n3s-fig12-posttraining-stages.pdf}
-  \caption[Post-training pipeline of Nemotron 3 Super]{The post-training
-  pipeline: supervised fine-tuning, three stages of reinforcement learning and
-  MTP healing. \source{NVIDIA (2026)~\cite{nvidia2026super}, Fig.~12}}
-  \label{fig:posttraining}
-\end{figure}
-
-\subsection{Two-Stage Objective}
-
-The SFT stage trains on more than 7 million samples. NVIDIA found that a
-single-stage SFT noticeably degraded performance on tasks with long inputs and
-short outputs, and therefore used two stages with different loss
-normalisation. For a batch $\mathcal{B}$ of conversations $c$, with
-$\mathcal{O}_c$ the output-token positions of conversation $c$ and $\ell_t$
-the negative log-likelihood of token $t$, Stage~1 averages over all output
-tokens in the batch,
+Post-training follows Figure~\ref{fig:posttraining}. SFT uses more than 7
+million samples. A single-stage SFT degraded tasks with long inputs and short
+outputs, so two stages with different loss normalisation are used. For a batch
+$\mathcal{B}$ of conversations $c$, with output positions $\mathcal{O}_c$ and
+token loss $\ell_t$, Stage~1 averages over all output tokens and Stage~2 first
+within each conversation:
 \begin{equation}
   \mathcal{L}_{\text{tok}} =
   \frac{\sum_{c \in \mathcal{B}} \sum_{t \in \mathcal{O}_c} \ell_t}
        {\sum_{c \in \mathcal{B}} |\mathcal{O}_c|},
-\end{equation}
-which gives strong token-level supervision and induces reasoning behaviour.
-Stage~2 first averages within each conversation and then across conversations,
-\begin{equation}
+  \qquad
   \mathcal{L}_{\text{samp}} =
   \frac{1}{|\mathcal{B}|} \sum_{c \in \mathcal{B}}
-  \left( \frac{1}{|\mathcal{O}_c|} \sum_{t \in \mathcal{O}_c} \ell_t \right),
+  \frac{1}{|\mathcal{O}_c|} \sum_{t \in \mathcal{O}_c} \ell_t .
 \end{equation}
-so that conversations with very long outputs no longer dominate the loss. This
-restores the long-input, short-output behaviour while retaining the reasoning
-ability. Stage~1 packs sequences up to 256k tokens; Stage~2 packs up to 512k
-tokens and adds long-context data. The shared-weight MTP head continues to be
-trained throughout with the same 0.3 loss weight.
+Stage~1 gives strong token-level supervision that induces reasoning; Stage~2
+stops very long outputs from dominating, restoring long-input, short-output
+behaviour. Stage~1 packs sequences up to 256k tokens and Stage~2 up to 512k.
+Agentic data---GitHub issues, terminal use, web search, SQL, tool calling and
+more---takes a much larger share than for \NN\ (Figure~\ref{fig:sft-blend}).
+The model supports reasoning off, regular and a new low-effort mode.
 
-\subsection{Data Blend}
-
-Compared with \NN, the volume and diversity of agentic data were greatly
-increased, and it takes a much larger share of the blend
-(Figure~\ref{fig:sft-blend}). New or heavily revised datasets cover software
-engineering on real GitHub issues, agentic command-line programming, terminal
-use, web search, SQL, conversational and general-purpose tool calling,
-financial reasoning, CUDA programming, long-context tasks, multilingual data
-and safety.
-
-\begin{figure}[htbp]
+\begin{figure}[!htbp]
   \centering
-  \includegraphics[width=0.66\linewidth]{n3s-fig16-sft-blend.jpg}
+  \includegraphics[width=0.92\linewidth]{n3s-fig12-posttraining-stages.pdf}
+  \caption[Post-training pipeline of Nemotron 3 Super]{Post-training pipeline:
+  SFT, three RL stages and MTP healing. \source{NVIDIA
+  (2026)~\cite{nvidia2026super}, Fig.~12}}
+  \label{fig:posttraining}
+\end{figure}
+
+\begin{figure}[!htbp]
+  \centering
+  \includegraphics[width=0.52\linewidth]{n3s-fig16-sft-blend.jpg}
   \caption[SFT data blend for Nemotron 3 Super]{SFT data blend for \NS.
   \source{NVIDIA (2026)~\cite{nvidia2026super}, Fig.~16}}
   \label{fig:sft-blend}
 \end{figure}
 
-The model is trained for three reasoning modes: reasoning off, regular
-reasoning, and a new \emph{low-effort} mode that gives users further control
-over how long the model thinks. Low-effort examples make up 2\% of the SFT
-samples.
-
 \section{Reinforcement Learning}
 
-The RL phase has three stages followed by MTP healing.
+\textbf{Stage 1 -- RL from verifiable rewards.} The model is trained jointly
+on 21 environments and 37 datasets (mathematics, code, STEM, safety, chat,
+long context, agentic tasks) where rewards can be checked automatically.
+Training on all at once avoided the regressions seen with single environments.
+Easy prompts are filtered and the rest ordered by difficulty, a curriculum
+shown to help on \NN\ (Figure~\ref{fig:rl-curriculum}). The algorithm is
+asynchronous GRPO: inference workers generate trajectories continuously into a
+buffer, full batches go to the trainer, and updated weights are pushed back
+with workers never more than one step behind. Each step uses 256 prompts with
+16 responses each, with generation length raised from 49K to 64K tokens. For
+long-horizon agentic tasks, \emph{PivotRL} reuses expert trajectories and
+focuses training on the ``pivot'' turns where the model is uncertain.
 
-\subsection{Stage 1: RL from Verifiable Rewards}
-
-The main stage is multi-environment RL from verifiable rewards (RLVR), in
-which a response earns a reward that can be checked automatically---a correct
-final answer, passing unit tests, a valid tool call. \NS\ is trained jointly on
-21 environments and 37 datasets covering mathematics, code, STEM, safety,
-chat, instruction following, long context, puzzles and several agentic tasks.
-Training on all environments at once gave stable gains, whereas training on a
-single environment caused severe regressions elsewhere.
-
-As in \NN, prompts that the SFT model already answers correctly every time are
-filtered out and the rest are ordered by difficulty. The benefit of such a
-curriculum was shown in the \NN\ report (Figure~\ref{fig:rl-curriculum}).
-
-\begin{figure}[htbp]
+\begin{figure}[!htbp]
   \centering
-  \includegraphics[width=\linewidth]{nano3-fig07-rl-curriculum.pdf}
-  \caption[Curriculum sampling versus random sampling in RL]{Curriculum
-  sampling compared with random sampling during RL on \NN, the recipe reused
-  for \NS. \source{NVIDIA (2025)~\cite{nvidia2025nano3}, Fig.~7}}
+  \includegraphics[width=0.85\linewidth]{nano3-fig07-rl-curriculum.pdf}
+  \caption[Curriculum sampling versus random sampling in RL]{Curriculum versus
+  random sampling during RL on \NN. \source{NVIDIA
+  (2025)~\cite{nvidia2025nano3}, Fig.~7}}
   \label{fig:rl-curriculum}
 \end{figure}
 
-The algorithm is an asynchronous form of GRPO in which training and inference
-run on separate GPUs. Inference workers generate trajectories continuously
-into a buffer; when a batch is full it is sent to the trainer, and updated
-weights are pushed back to the workers, which are never allowed to lag more
-than one step behind. Each step samples 256 prompts with 16 responses each, a
-batch of 4096, with a maximum generation length that starts at 49K tokens and
-is later raised to 64K.
+\textbf{Stage 2 -- Software engineering.} Each rollout runs an agent in a
+container to produce a code patch, rewarded by the repository's tests.
 
-For long-horizon agentic domains the team uses \emph{PivotRL}, which reuses
-expert trajectories from SFT and concentrates training on the ``pivot'' turns
-where the model is uncertain about its next action. This keeps the efficiency
-of SFT without the out-of-domain degradation it tends to cause.
+\textbf{Stage 3 -- RL from human feedback.} A generative reward model trained
+on human preferences improves instruction following and interaction quality.
 
-\subsection{Stage 2: RL for Software Engineering}
-
-Software-engineering tasks are trained in a separate stage because their
-rollouts are much slower and need longer contexts. Each rollout launches a
-container with the target repository, runs an agent loop to produce a code
-patch, and scores it against the ground-truth tests for a binary reward. The
-agent is exposed to several tool formats so that the skills transfer across
-coding harnesses.
-
-\subsection{Stage 3: RL from Human Feedback}
-
-The last RL stage improves instruction following, robustness and overall
-interaction quality. A large generative reward model (GenRM), trained on human
-preference data and able to follow stated principles, scores the responses.
-Unlike in \NN, this reward model is also used throughout the multi-environment
-stage.
-
-\subsection{MTP Healing}
-
-RL changes the main model's behaviour, which leaves the MTP heads slightly out
-of step with it. In the final stage the rest of the network is frozen and only
-the MTP heads are retrained on the model's own generated responses, which the
-report says significantly improves MTP accuracy---and therefore the speed-up
-from speculative decoding.
+\textbf{MTP healing.} Finally the network is frozen and only the MTP heads are
+retrained on the model's own outputs, restoring their drafting accuracy.

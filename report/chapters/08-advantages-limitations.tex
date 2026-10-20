@@ -1,0 +1,88 @@
+\chapter{Applications, Advantages and Limitations}
+\label{ch:adv}
+\label{ch:apps}
+
+\section{Applications}
+
+The design choices of \NS---a million-token context, high throughput on long
+generations, and post-training focused on multi-step tool use---point to a
+particular class of applications. The Nemotron~3 white paper positions Super
+for collaborative agents and high-volume workloads such as IT ticket
+automation~\cite{nvidia2025nemotron3}.
+
+\begin{itemize}
+  \item \textbf{Coding agents.} Reading a repository, editing files and
+        running tests over many steps produces long, prefill-heavy contexts.
+        \NS\ was trained on real GitHub issues and scores 60.5 on SWE-Bench.
+  \item \textbf{Terminal and tool-using agents.} Command-line automation,
+        database queries, web search and customer-service tool calls
+        (TauBench) benefit from high throughput and a cost per token that does
+        not climb as the session grows.
+  \item \textbf{Long-document analysis.} Entire contracts, research papers or
+        codebases fit in a one-million-token context, and the RULER score of
+        91.6 shows the model can actually use it.
+  \item \textbf{Reasoning with controllable effort.} Three reasoning
+        modes---off, regular and low-effort---combined with a reasoning budget
+        let an application spend long traces on hard problems and answer simple
+        requests quickly, trading accuracy against cost per request.
+  \item \textbf{On-premises deployment.} Open weights and FP8/NVFP4
+        checkpoints let organisations in finance, healthcare or government run
+        and fine-tune the model on their own hardware.
+\end{itemize}
+
+\section{Advantages}
+
+\begin{enumerate}
+  \item \textbf{Long context at low cost:} only 8 of 48 sequence-mixing layers
+        need a KV cache; the rest keep a constant-size state.
+  \item \textbf{High throughput:} up to 2.2$\times$ and 7.5$\times$ faster
+        than GPT-OSS-120B and Qwen3.5-122B at comparable accuracy.
+  \item \textbf{Large capacity, small active size:} about 12B of 120B
+        parameters are used per token.
+  \item \textbf{Hardware-aware MoE:} LatentMoE cuts expert memory and routing
+        traffic fourfold and spends the saving on more experts.
+  \item \textbf{Built-in speculative decoding:} MTP heads accept 3.45 tokens
+        per step on average, with no separate draft model.
+  \item \textbf{Openness:} weights, much of the data and the recipe are
+        public.
+\end{enumerate}
+
+\section{Limitations}
+
+\begin{enumerate}
+  \item \textbf{Memory footprint:} all 120B parameters must be held in memory.
+  \item \textbf{Serving complexity:} expert routing across GPUs, and support
+        for Mamba, attention, MoE and MTP together, complicate deployment.
+  \item \textbf{Sensitive recurrent state:} quantizing the Mamba state causes
+        drift; the fix relies on recent NVIDIA hardware.
+  \item \textbf{Hardware-dependent speed:} the 2.2$\times$ figure needs native
+        FP4 support.
+  \item \textbf{Accuracy gap:} it trails Qwen3.5-122B on several reasoning and
+        agentic benchmarks.
+  \item \textbf{Vendor-reported results:} all figures come from the developers;
+        independent evaluation is still needed.
+\end{enumerate}
+
+\section{Comparison at a Glance}
+
+Table~\ref{tab:compare} places \NS\ beside a pure Transformer MoE model of the
+same class.
+
+\begin{table}[!htbp]
+\centering
+\small
+\caption{Hybrid Mamba--Transformer MoE compared with a pure Transformer MoE}
+\label{tab:compare}
+\begin{tabularx}{\linewidth}{@{}P{3.6cm}LL@{}}
+\toprule
+\textbf{Aspect} & \textbf{Pure Transformer MoE} & \textbf{\NS\ (hybrid)} \\
+\midrule
+Sequence mixing & Attention in every block & Mamba-2 in 40 blocks, attention in 8 \\
+Generation memory & KV cache in every block & KV cache in 8 layers only \\
+Feed-forward part & Standard MoE at full width & LatentMoE in a 1024-dim latent space \\
+Faster decoding & External draft model, if any & Built-in MTP heads \\
+Deployment risk & Well understood & Recurrent state needs careful quantization \\
+Tooling maturity & Very mature & Newer, fewer optimised runtimes \\
+\bottomrule
+\end{tabularx}
+\end{table}
